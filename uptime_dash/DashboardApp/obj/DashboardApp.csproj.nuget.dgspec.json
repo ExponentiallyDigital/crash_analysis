@@ -1,25 +1,27 @@
 {
   "format": 1,
   "restore": {
-    "c:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj": {}
+    "C:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj": {}
   },
   "projects": {
-    "c:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj": {
+    "C:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "c:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj",
+        "projectUniqueName": "C:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj",
         "projectName": "DashboardApp",
-        "projectPath": "c:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj",
+        "projectPath": "C:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\DashboardApp.csproj",
         "packagesPath": "C:\\Users\\andrew\\.nuget\\packages\\",
-        "outputPath": "c:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\obj\\",
+        "outputPath": "C:\\Users\\andrew\\Documents\\crash_analysis\\uptime_dash\\DashboardApp\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "C:\\Users\\andrew\\AppData\\Roaming\\NuGet\\NuGet.Config"
+          "C:\\Users\\andrew\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
         ],
         "originalTargetFrameworks": [
           "net10.0-windows"
         ],
         "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
           "https://api.nuget.org/v3/index.json": {}
         },
         "frameworks": {
@@ -62,7 +64,7 @@
               "privateAssets": "none"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.102/PortableRuntimeIdentifierGraph.json",
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.103/PortableRuntimeIdentifierGraph.json",
           "packagesToPrune": {
             "Microsoft.CSharp": "(,4.7.32767]",
             "Microsoft.VisualBasic": "(,10.4.32767]",

@@ -6,20 +6,6 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Minimize the PowerShell console window (host) immediately
-Add-Type -Name Window -Namespace Console -MemberDefinition '
-[DllImport("user32.dll")]
-public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-public const int SW_MINIMIZE = 6;
-'
-
-# Get the main window handle of this PowerShell process
-$consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
-
-# Minimize it
-[Console.Window]::ShowWindow($consoleHwnd, 6) | Out-Null
-
 # =============================================================================
 # 2. FORM SETUP
 # =============================================================================
@@ -31,7 +17,7 @@ $form.Text = "System Dashboard"
 $form.Size = New-Object System.Drawing.Size(460, 340)
 
 # Ensure the window opens directly in the center of the user's screen.
-#$form.StartPosition = "CenterScreen"
+$form.StartPosition = "CenterScreen"
 
 # Set a black background for a high-contrast, "terminal" look.
 $form.BackColor = 'Black'
@@ -115,97 +101,6 @@ function Update-Dashboard {
     # Remaining is Target Time minus Current Time.
     $remaining = $targetTime - (Get-Date)
     
-    # ────────────────────────────────────────────────
-    # 30-MINUTE EARLY WARNING ALARM
-    # ────────────────────────────────────────────────
-    $earlyWarningMinutes = 30
-
-    if ($remaining.TotalMinutes -le $earlyWarningMinutes -and $remaining.TotalMinutes -gt 0) {
-        # Only trigger once
-        if (-not (Get-Variable -Name "AlarmTriggered" -Scope Script -ErrorAction SilentlyContinue)) {
-            Set-Variable -Name "AlarmTriggered" -Value $true -Scope Script
-
-            Write-Host "30-min warning triggered! Uptime: $($uptime.ToString('dd\.hh\:mm'))" -ForegroundColor Yellow
-
-            # Audible: Exclamation sound ×3
-            $sound = [System.Media.SystemSounds]::Exclamation
-            1..5 | ForEach-Object {
-                $sound.Play()
-                Start-Sleep -Milliseconds 700
-            }
-
-            # Visual: Flash background
-            $originalColor = $form.BackColor
-            $form.BackColor = 'OrangeRed'
-            Start-Sleep -Seconds 1
-            $form.BackColor = 'Red'
-            Start-Sleep -Seconds 1
-            $form.BackColor = 'Orange'
-            Start-Sleep -Seconds 1
-            $form.BackColor = $originalColor
-
-            # Popup message (fixed quotes and parentheses)
-            Add-Type -AssemblyName System.Windows.Forms
-
-            # Custom centered warning on SECONDARY monitor (left screen)
-            $alertForm = New-Object System.Windows.Forms.Form
-            $alertForm.Text = "Uptime Crash Warning - 30 Minutes Remaining"
-            $alertForm.Size = New-Object System.Drawing.Size(500, 220)
-            $alertForm.StartPosition = "Manual"  # We set location manually
-            $alertForm.BackColor = 'DarkRed'
-            $alertForm.ForeColor = 'White'
-            $alertForm.Font = New-Object System.Drawing.Font("Segoe UI", 11)
-            $alertForm.FormBorderStyle = 'FixedDialog'
-            $alertForm.MaximizeBox = $false
-            $alertForm.MinimizeBox = $false
-            $alertForm.TopMost = $true   # Stays on top
-
-            # Center on secondary monitor (left one)
-            $screens = [System.Windows.Forms.Screen]::AllScreens
-            $secondary = $screens | Where-Object { -not $_.Primary } | Select-Object -First 1
-
-            if ($null -eq $secondary) { $secondary = $screens | Where-Object { $_.Primary } | Select-Object -First 1 }
-
-            $bounds = $secondary.Bounds
-
-            $x = $bounds.Left + [math]::Round(($bounds.Width - $alertForm.Width) / 2)
-            $y = $bounds.Top  + [math]::Round(($bounds.Height - $alertForm.Height) / 2)
-
-            $alertForm.Location = New-Object System.Drawing.Point($x, $y)
-
-            # Message label
-            $lblMsg = New-Object System.Windows.Forms.Label
-            $lblMsg.Text = "WARNING: System is approaching expected crash window!`r`n`r`n" +
-                        "Remaining: $($remaining.Hours)h $($remaining.Minutes)m`r`n" +
-                        "Current uptime: $($uptime.Days) days $($uptime.Hours)h $($uptime.Minutes)m`r`n`r`n" +
-                        "Save work and prepare to reboot soon."
-            $lblMsg.AutoSize = $false
-            $lblMsg.Location = New-Object System.Drawing.Point(20, 20)
-            $lblMsg.Size = New-Object System.Drawing.Size(460, 120)
-            $lblMsg.TextAlign = 'MiddleCenter'
-            $alertForm.Controls.Add($lblMsg)
-
-            # OK button
-            $btnOK = New-Object System.Windows.Forms.Button
-            $btnOK.Text = "OK"
-            $btnOK.Location = New-Object System.Drawing.Point(200, 160)
-            $btnOK.Size = New-Object System.Drawing.Size(100, 35)
-            $btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
-            $alertForm.AcceptButton = $btnOK
-            $alertForm.Controls.Add($btnOK)
-
-            # Show as dialog (blocks until closed)
-            $alertForm.ShowDialog() | Out-Null
-            $alertForm.Dispose()
-        }
-    }
-    elseif ($remaining.TotalMinutes -le 0) {
-        # Optional: Final alarm when time is up (different sound/message if desired)
-        [System.Media.SystemSounds]::Hand.Play()  # Different sound for "time expired"
-        # You can add another MessageBox here if you want a second alert
-    }
-
-    # ────────────────────────────────────────────────
     # Logic check: If time has run out (negative seconds), force it to Zero
     # so the display doesn't show negative numbers (e.g., -05 minutes).
     if ($remaining.TotalSeconds -lt 0) {
@@ -272,49 +167,6 @@ Update-Dashboard -Offset $Offset
 
 # Start the timer loop.
 $timer.Start()
-
-# =============================================================================
-# POSITION FORM ON SECONDARY MONITOR (LEFT SIDE), BOTTOM-RIGHT CORNER
-# =============================================================================
-
-# Force handle creation
-$form.Handle | Out-Null
-Start-Sleep -Milliseconds 300  # Give handle time to initialize
-
-# Get screens
-$screens = [System.Windows.Forms.Screen]::AllScreens
-
-# Explicitly select the left/secondary monitor (DISPLAY2, non-primary)
-$secondary = $screens | Where-Object { -not $_.Primary } | Select-Object -First 1
-
-if ($null -eq $secondary) {
-    Write-Host "No secondary found - falling back to primary" -ForegroundColor Yellow
-    $secondary = $screens | Where-Object { $_.Primary } | Select-Object -First 1
-}
-
-$bounds = $secondary.Bounds
-
-# Form dimensions (match your original size)
-$width  = $form.Width   # 460
-$height = $form.Height  # 340
-
-# Bottom-right of LEFT monitor:
-# Right edge = $bounds.Right (0 in your case)
-# Bottom edge = $bounds.Bottom (800)
-$x = $bounds.Right - $width + 7     # e.g., 0 - 460 - 40 = -500 (right edge of left monitor)
-$y = $bounds.Bottom - $height - 0   # e.g., 800 - 340 - 60 = 400 (above bottom)
-
-# Apply position
-$form.Location = New-Object System.Drawing.Point($x, $y)
-
-# Ensure visible and not minimized/maximized unexpectedly
-$form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
-$form.BringToFront()
-
-# Debug (keep for now, remove later if happy)
-Write-Host "Secondary monitor: $($secondary.DeviceName)" -ForegroundColor Magenta
-Write-Host "Bounds: X=$($bounds.X) to $($bounds.Right), Y=$($bounds.Y) to $($bounds.Bottom)" -ForegroundColor Magenta
-Write-Host "Form positioned at: X=$x, Y=$y (size $($width)x$($height))" -ForegroundColor Magenta
 
 # =============================================================================
 # 9. SHOW FORM

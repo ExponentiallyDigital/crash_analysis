@@ -6,7 +6,7 @@
 
 param(
     # Change this to your folder (or pass it on the command line: .\Analyze-Dumps.ps1 -DumpDirectory "C:\path\to\folder")
-    [string]$DumpDirectory = "C:\Users\andrew\Desktop\X850E-E"
+    [string]$DumpDirectory = "C:\Users\andrew\Desktop"
 )
 
 # Path to cdb.exe (WinDbg console debugger)

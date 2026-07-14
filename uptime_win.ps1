@@ -100,17 +100,16 @@ function Update-Dashboard {
     param($Offset)
 
     # --- Retrieve OS Data ---
-    # Get-CimInstance is the modern replacement for Get-WmiObject.
-    # Win32_OperatingSystem holds boot time and memory info.
-    $os = Get-CimInstance Win32_OperatingSystem
-    $bootTime = $os.LastBootUpTime
+    # Use kernel monotonic tick counter for accurate uptime (matches WinDbg !sysinfo).
+    $perf = Get-CimInstance Win32_PerfRawData_PerfOS_System
+    $uptime = [TimeSpan]::FromSeconds($perf.SystemUpTime)
     
-    # Calculate Uptime: Current Time minus Last Boot Time.
-    $uptime = (Get-Date) - $bootTime
+    # Kernel boot time = now - monotonic uptime
+    $kernelBootTime = (Get-Date) - $uptime
 
     # --- Calculate Target & Remaining Time ---
-    # Target is Boot Time + the 12-hour offset defined above.
-    $targetTime = $bootTime + $Offset
+    # Target is Kernel Boot Time + the offset defined above.
+    $targetTime = $kernelBootTime + $Offset
 
     # Remaining is Target Time minus Current Time.
     $remaining = $targetTime - (Get-Date)
@@ -200,9 +199,13 @@ function Update-Dashboard {
         }
     }
     elseif ($remaining.TotalMinutes -le 0) {
-        # Optional: Final alarm when time is up (different sound/message if desired)
-        [System.Media.SystemSounds]::Hand.Play()  # Different sound for "time expired"
-        # You can add another MessageBox here if you want a second alert
+        # Check if final alarm has already been triggered (prevents repeat every 30s)
+        if (-not (Get-Variable -Name "FinalAlarmTriggered" -Scope Script -ErrorAction SilentlyContinue)) {
+            Set-Variable -Name "FinalAlarmTriggered" -Value $true -Scope Script
+            [System.Media.SystemSounds]::Hand.Play()
+            # Optional: add a one-time popup here if you want
+            [System.Windows.Forms.MessageBox]::Show("Target time has been reached!", "Uptime Alert")
+        }
     }
 
     # ────────────────────────────────────────────────
@@ -214,6 +217,7 @@ function Update-Dashboard {
 
     # --- Calculate Hardware Stats ---
     # RAM: WMI returns KB. Divide by 1MB to get GB. Round to 2 decimals.
+    $os = Get-CimInstance Win32_OperatingSystem
     $freeRAM_GB = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
     
     # Disk: Get all Fixed Local Disks (DriveType=3). 
@@ -234,7 +238,7 @@ function Update-Dashboard {
     $labels.Uptime.Text     = "Uptime:          $($uptime.Days) days $($uptime.Hours) hours $($uptime.Minutes) minutes"
     
     # Format dates as 'yyyy-MM-dd HH:mm:ss' for readability.
-    $labels.BootTime.Text   = "Boot Time:       $($bootTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    $labels.BootTime.Text   = "Boot Time:       $($kernelbootTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     $labels.TargetTime.Text = "Boot +11h 50m:   $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
     # Display remaining hours and minutes.

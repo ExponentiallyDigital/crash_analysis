@@ -199,9 +199,13 @@ function Update-Dashboard {
         }
     }
     elseif ($remaining.TotalMinutes -le 0) {
-        # Optional: Final alarm when time is up (different sound/message if desired)
-        [System.Media.SystemSounds]::Hand.Play()  # Different sound for "time expired"
-        # You can add another MessageBox here if you want a second alert
+        # Check if final alarm has already been triggered (prevents repeat every 30s)
+        if (-not (Get-Variable -Name "FinalAlarmTriggered" -Scope Script -ErrorAction SilentlyContinue)) {
+            Set-Variable -Name "FinalAlarmTriggered" -Value $true -Scope Script
+            [System.Media.SystemSounds]::Hand.Play()
+            # Optional: add a one-time popup here if you want
+            [System.Windows.Forms.MessageBox]::Show("Target time has been reached!", "Uptime Alert")
+        }
     }
 
     # ────────────────────────────────────────────────

@@ -101,7 +101,7 @@ function Update-Dashboard {
 
     # --- Retrieve OS Data ---
     # Use kernel monotonic tick counter for accurate uptime (matches WinDbg !sysinfo).
-    $perf = Get-CimInstance Win32_PerfRawData_PerfOS_System
+    $perf = Get-CimInstance Win32_PerfFormattedData_PerfOS_System
     $uptime = [TimeSpan]::FromSeconds($perf.SystemUpTime)
     
     # Kernel boot time = now - monotonic uptime
@@ -238,7 +238,7 @@ function Update-Dashboard {
     $labels.Uptime.Text     = "Uptime:          $($uptime.Days) days $($uptime.Hours) hours $($uptime.Minutes) minutes"
     
     # Format dates as 'yyyy-MM-dd HH:mm:ss' for readability.
-    $labels.BootTime.Text   = "Boot Time:       $($kernelbootTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    $labels.BootTime.Text   = "Boot Time:       $($kernelBootTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     $labels.TargetTime.Text = "Boot +11h 50m:   $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
     # Display remaining hours and minutes.

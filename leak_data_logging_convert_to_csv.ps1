@@ -1,14 +1,16 @@
 # Performance Log JSON to CSV with Process Identity Tracking (v7)
 #
-# ERROR: at least one file has been incorrectly split eg. wudfhost#1 has been split into three processes but only two have a different comamnd line.
-#
 # How It Works:
 # First Pass: Scans all JSON to find __command_line counters, builds identity map
 # Schema Build: Creates columns for each unique process + all their metrics
 # Data Extraction: For each row, looks up process by command line, maps to correct unique column
 # Output: Clean CSV with stable column names
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 $JsonPath = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP\2026-01-18_20-26-40_perfdata_log.json"
+
 $CsvPath = $JsonPath -replace "\.json$", ".csv"
 
 # --- 1. First Pass: Build Process Identity Map ---

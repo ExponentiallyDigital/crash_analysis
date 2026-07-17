@@ -1,3 +1,9 @@
+# poolmon_temporal_analysis.ps1
+# Comprehensive temporal analysis of poolmon snapshots
+
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 # poolmon_analysis.ps1
 $LogDir = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP\poolmon"
 $outDir = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP"

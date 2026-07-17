@@ -4,6 +4,9 @@
 # NOTE: Raw files accumulate quickly (96/day at 15-min intervals).
 #       Monitor disk space or implement periodic cleanup.
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 $poolmonPath = "C:\perflogs\apps\poolmon.exe"
 $outDir      = "C:\perflogs\poolmon"
 $iterationInterval = 900 # 15 minutes (900 seconds)

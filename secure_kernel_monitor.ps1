@@ -2,6 +2,9 @@
 # Monitor system state to correlate with secure kernel crashes
 # Run with elevated privileges
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 param(
     [string]$LogDir = "C:\PerfLogs\SecureKernelMonitor",
     [int]$IntervalSeconds = 60

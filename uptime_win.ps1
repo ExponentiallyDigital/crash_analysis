@@ -90,6 +90,9 @@ foreach ($lbl in $labels.Values) { $form.Controls.Add($lbl) }
 # =============================================================================
 # Define the target duration (e.g., a 12-hour shift or maintenance window).
 # Change this value to adjust the countdown timer.
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 $Offset = New-TimeSpan -Hours 11 -Minutes 50
 
 # =============================================================================
@@ -239,6 +242,10 @@ function Update-Dashboard {
     
     # Format dates as 'yyyy-MM-dd HH:mm:ss' for readability.
     $labels.BootTime.Text   = "Boot Time:       $($kernelBootTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+
+    # !!!!!!!!!!!!! 
+    # !!!!!!!!!!!!! edit below line:
+    # !!!!!!!!!!!!! 
     $labels.TargetTime.Text = "Boot +11h 50m:   $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
     # Display remaining hours and minutes.
@@ -301,6 +308,10 @@ $bounds = $secondary.Bounds
 # Form dimensions (match your original size)
 $width  = $form.Width   # 460
 $height = $form.Height  # 340
+
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 
 # Bottom-right of LEFT monitor:
 # Right edge = $bounds.Right (0 in your case)

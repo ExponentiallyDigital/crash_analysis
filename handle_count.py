@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# creates output for the total number of handles open at a given interval. eg:
+# display the total number of handles open at a given interval. eg:
 # 2026-01-16T21:29:53.4081804+11:00       146274
 # 2026-01-16T21:30:04.9163369+11:00       146295
 # 2026-01-16T21:30:16.8221244+11:00       146298
@@ -18,8 +18,12 @@ import sys
 import csv
 import re
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 INPUT = Path(r"C:\perflogs\2026-01-16_21-29-52_perfdata_log.json")
 OUT_CSV = Path("handle_totals_unique.csv")
+
 EXCLUDE_SUBSTR = "process__total__handle_count"
 
 # regex patterns to extract instance name from common key forms

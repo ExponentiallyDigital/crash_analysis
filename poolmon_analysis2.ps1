@@ -2,6 +2,9 @@
 # OPTIMIZED version for large datasets
 # Comprehensive temporal analysis of poolmon snapshots
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 param(
     [string]$LogDir = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP\poolmon",
     [string]$OutDir = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP",

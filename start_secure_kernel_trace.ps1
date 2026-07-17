@@ -2,6 +2,9 @@
 # Start Windows Performance Recorder trace for secure kernel debugging
 # Run as Administrator
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 param(
     [string]$OutputPath = "C:\PerfLogs\SecureKernelTrace",
     [int]$MaxSizeMB = 2048

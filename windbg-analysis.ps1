@@ -4,11 +4,17 @@
 # Run this script as Administrator
 # =====================================================
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 param(
     # Change this to your folder (or pass it on the command line: .\Analyze-Dumps.ps1 -DumpDirectory "C:\path\to\folder")
     [string]$DumpDirectory = "C:\Users\andrew\Desktop"
 )
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below line:
+# !!!!!!!!!!!!! 
 # Path to cdb.exe (WinDbg console debugger)
 $debuggerPath = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
 

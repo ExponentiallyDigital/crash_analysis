@@ -13,6 +13,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 # Define test phases based on crash likelihood
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! add/edit entries as needed below
+# !!!!!!!!!!!!! 
 $TestPhases = @{
     1 = @{
         Name = "NVIDIA GPU Driver Only"

@@ -9,7 +9,11 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 }
 # --- ADMIN CHECK END ---
 
-Set-Location "C:\Users\andrew\Documents\crash_analysis"
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
+# folder where this script lives
+Set-Location "C:\Users\YOURUSERNAME\Documents\crash_analysis"
 
 # 1. RUN THE ONE-TIME SETUP SCRIPT (Verifier Status)
 Write-Host ">>> STEP 1: Running Driver Verifier Status Check..." -ForegroundColor Cyan
@@ -38,6 +42,9 @@ finally {
     Stop-Process -Id $ProcLeak.Id -Force -ErrorAction SilentlyContinue
     Stop-Process -Id $ProcPool.Id -Force -ErrorAction SilentlyContinue
 
+    # !!!!!!!!!!!!! 
+    # !!!!!!!!!!!!! edit below lines:
+    # !!!!!!!!!!!!! 
     if (Test-Path "C:\perflogs\poolmon_snapshot.lock") { 
         Remove-Item "C:\perflogs\poolmon_snapshot.lock" -Force 
     }

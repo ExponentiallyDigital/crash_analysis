@@ -1,6 +1,9 @@
 # extract a subset of data from the CSV file
 # useful for very large files
 
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 $CsvPath = "C:\PerfLogs\2026-01-19 SECURE_KERNEL_ERROR (18b).DMP\2026-01-18_20-26-40_perfdata_log.json"
 $csv = Import-Csv $CsvPath
 

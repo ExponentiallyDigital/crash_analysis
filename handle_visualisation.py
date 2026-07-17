@@ -19,6 +19,9 @@ import matplotlib.dates as mdates
 
 # === Configuration ===
 # Input file
+# !!!!!!!!!!!!! 
+# !!!!!!!!!!!!! edit below lines:
+# !!!!!!!!!!!!! 
 INPUT_PATH = Path(r"C:\perflogs\2026-01-16_21-29-52_perfdata_log.json")
 TOP_N = 20 # top 20 processes to chart
 PLOT_STYLE = "seaborn-v0_8-darkgrid"

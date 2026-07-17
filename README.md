@@ -9,8 +9,7 @@
 [![Last Commit](https://img.shields.io/github/last-commit/ExponentiallyDigital/crash_analysis?style=flat-square&color=important)](https://github.com/ExponentiallyDigital/crash_analysis/commits/main)
 [![Code Size](https://img.shields.io/github/languages/code-size/ExponentiallyDigital/crash_analysis?style=flat-square&color=lightgrey)](https://github.com/ExponentiallyDigital/crash_analysis)
 
-
-Tools to assist with computer stability troublshooting 'crash_analysis'.
+Tools to assist with computer stability troublshooting, 'crash_analysis'.
 
 > [!WARNING]
 > Understand what these scripts do before use!

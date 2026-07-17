@@ -1,4 +1,13 @@
 # README.md
+[![Release](https://img.shields.io/github/v/release/ExponentiallyDigital/crash_analysis?style=flat-square&color=blue)](https://github.com/ExponentiallyDigital/pia-wireguard-cfg/releases)
+[![Windows](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/)
+[![License](https://img.shields.io/github/license/ExponentiallyDigital/crash_analysis?style=flat-square)](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/ExponentiallyDigital/crash_analysis/total?style=flat-square&color=success)](https://github.com/ExponentiallyDigital/crash_analysis/releases)
+[![Total Commits](https://img.shields.io/github/commit-activity/t/ExponentiallyDigital/crash_analysis?style=flat-square&color=blueviolet)](https://github.com/ExponentiallyDigital/crash_analysis/commits/main)
+[![Top Language](https://img.shields.io/github/languages/top/ExponentiallyDigital/crash_analysis?style=flat-square&color=orange)](https://github.com/ExponentiallyDigital/crash_analysis)
+[![Last Commit](https://img.shields.io/github/last-commit/ExponentiallyDigital/crash_analysis?style=flat-square&color=important)](https://github.com/ExponentiallyDigital/crash_analysis/commits/main)
+[![Code Size](https://img.shields.io/github/languages/code-size/ExponentiallyDigital/crash_analysis?style=flat-square&color=lightgrey)](https://github.com/ExponentiallyDigital/crash_analysis)
+
 
 Tools to assist with computer stability troublshooting 'crash_analysis'.
 

@@ -3,6 +3,7 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/)
 [![License](https://img.shields.io/github/license/ExponentiallyDigital/crash_analysis?style=flat-square)](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/ExponentiallyDigital/crash_analysis/total?style=flat-square&color=success)](https://github.com/ExponentiallyDigital/crash_analysis/releases)
+![Visitor Count](https://visitor-badge.laobi.icu/badge?page_id=ExponentiallyDigital.crash_analysis)
 [![Total Commits](https://img.shields.io/github/commit-activity/t/ExponentiallyDigital/crash_analysis?style=flat-square&color=blueviolet)](https://github.com/ExponentiallyDigital/crash_analysis/commits/main)
 [![Top Language](https://img.shields.io/github/languages/top/ExponentiallyDigital/crash_analysis?style=flat-square&color=orange)](https://github.com/ExponentiallyDigital/crash_analysis)
 [![Last Commit](https://img.shields.io/github/last-commit/ExponentiallyDigital/crash_analysis?style=flat-square&color=important)](https://github.com/ExponentiallyDigital/crash_analysis/commits/main)

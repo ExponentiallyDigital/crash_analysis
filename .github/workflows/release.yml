@@ -39,20 +39,31 @@ jobs:
       - name: Install Pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
-      - name: Prepare release assets
+      - name: Prepare and Package Release Assets
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          mkdir -p build
+          REPO_NAME="${{ github.event.repository.name }}"
+          DIST_DIR="dist/${REPO_NAME}-${VERSION}"
 
-          # Strip badges and inject version under the README.html title
+          # 1. Create a clean distribution directory structure
+          mkdir -p "$DIST_DIR"
+
+          # 2. Copy all your scripts and repository files into the distribution folder
+          # Excludes hidden files/dirs like .git and .github
+          rsync -rr --exclude='.git*' . "$DIST_DIR"
+
+          # 3. Strip badges and inject version under the README.html title
           grep -v 'img.shields.io\|sonarcloud.io/api/project_badges' README.md \
             | sed "s/^# \(.*\)/# \1\n\n**Version:** ${VERSION}/" \
             > /tmp/README.md
 
-          # Convert to a standalone embedded HTML file
-          pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o build/README.html
+          # 4. Generate README.html directly into the distribution folder
+          pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o "${DIST_DIR}/README.html"
 
-          cp LICENSE build/LICENSE
+          # 5. Compress the folder into custom zip and tar.gz files
+          cd dist
+          zip -r "../${REPO_NAME}-${VERSION}.zip" "${REPO_NAME}-${VERSION}"
+          tar -czf "../${REPO_NAME}-${VERSION}.tar.gz" "${REPO_NAME}-${VERSION}"
 
       - name: Dry run notice
         if: ${{ github.event.inputs.dry_run == 'true' }}
@@ -63,8 +74,10 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           generate_release_notes: true
+          # This disables GitHub's default un-customized source downloads
+          fail_on_unmatched_files: true
           files: |
-            build/README.html
-            build/LICENSE
+            *.zip
+            *.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -60,10 +60,9 @@ jobs:
           # 4. Generate README.html directly into the distribution folder
           pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o "${DIST_DIR}/README.html"
 
-          # 5. Compress the folder into custom zip and tar.gz files
+          # 5. Compress the folder into custom zip file
           cd dist
           zip -r "../${REPO_NAME}-${VERSION}.zip" "${REPO_NAME}-${VERSION}"
-          tar -czf "../${REPO_NAME}-${VERSION}.tar.gz" "${REPO_NAME}-${VERSION}"
 
       - name: Dry run notice
         if: ${{ github.event.inputs.dry_run == 'true' }}

@@ -1,15 +1,52 @@
+# =====================================================
+# Batch DMP Analyzer (DDR5 Edition)
+# =====================================================
+# Usage:
+#   .\Analyze-DDR5.ps1 -DumpDirectory "C:\CrashDumps"
+# =====================================================
+
+param(
+    # Change this to your folder or pass it on the command line
+    [string]$DumpDirectory = "C:\CrashDumps"
+)
+
+# Path to cdb.exe (WinDbg console debugger)
+$debuggerPath = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+
+# ────────────────────────────────────────────────
+# Verify debugger exists
+# ────────────────────────────────────────────────
+if (-not (Test-Path $debuggerPath)) {
+    Write-Host "ERROR: cdb.exe not found at: $debuggerPath" -ForegroundColor Red
+    exit 1
+}
+
+$dumpFiles = Get-ChildItem -Path $DumpDirectory -Filter "*.dmp" -File
+
+if ($dumpFiles.Count -eq 0) {
+    Write-Host "No .dmp files found in $DumpDirectory" -ForegroundColor Red
+    exit
+}
+
+Write-Host "Found $($dumpFiles.Count) dump file(s). Starting..." -ForegroundColor Green
+
+foreach ($dumpFile in $dumpFiles) {
+    $dumpPath = $dumpFile.FullName
+    $txtPath  = [System.IO.Path]::ChangeExtension($dumpPath, ".txt")
+
+    Write-Host "Processing: $($dumpFile.Name)  →  $txtPath" -ForegroundColor Cyan
+
+    # We inject the dynamic output filename at the top
+    $commands = ".logopen `"$txtPath`"`n"
+    
+    # We use a single-quoted string block (@' ... '@) for the rest so PowerShell 
+    # doesn't accidentally evaluate your $t0/$t1 pseudo-registers or $$ symbols.
+    $commands += @'
 $$ ==========================================================================================================
 $$ DDR5 refresh defect advanced forensic memory dump extraction
-$$ Run: windbg -z <dump.dmp> -c "$$><C:\\Users\\andrew\\Documents\\crash_analysis\\ddr5_analyzer-extract.txt"
 $$ ==========================================================================================================
 
 .block { .symfix; .reload }
-.shell -ci ".echo mkdir" mkdir c:\dump_analysis 2>nul
-# !!!!!!!!!!!!!
-# !!!!!!!!!!!!! edit below line:
-# !!!!!!!!!!!!!
-.logopen /t c:\C:\CrashDumps\ddr5_analyser_*.txt
-# in the above line, 'c:\C:\...' is like that on purpose!
 
 $$ ============================================================
 $$ SECTION 1: METADATA
@@ -39,6 +76,15 @@ $$ SECTION 3: CORRUPTION VA & PTE RESOLUTION
 $$ ============================================================
 .echo ###SECTION:CORRUPTION###
 r $t5 = @$bugcheckparam1
+
+$$ Smart Address Safeguard: If param1 is a subcode/error code instead of a VA, 
+$$ redirect the scanner to the true exception address or faulting instruction pointer.
+.if (${$t5} < 0x1000)
+{
+    r $t5 = @$exaddress
+    .if (${$t5} < 0x1000) { r $t5 = @$ip }
+}
+
 .echo CORRUPTED_VA = ${$t5}
 
 .if (@$ptrsize == 8)
@@ -183,3 +229,26 @@ $$ If these look like kernel pointers, note them for XOR analysis
 
 .logclose
 q
+'@
+
+    # Run cdb by piping the standard input stream
+    Write-Host "  Launching cdb..." -NoNewline
+    $output = $commands | & $debuggerPath -z "$dumpPath" -c ".logopen nul" 2>&1
+
+    if ($?) {
+        Write-Host " OK" -ForegroundColor Green
+    } else {
+        Write-Host " FAILED" -ForegroundColor Red
+        Write-Host $output -ForegroundColor DarkYellow
+    }
+
+    # Verify Output
+    if (Test-Path $txtPath) {
+        $size = (Get-Item $txtPath).Length / 1KB
+        Write-Host "  → Created: $txtPath  ($([math]::Round($size,1)) KB)" -ForegroundColor Green
+    } else {
+        Write-Host "  → NO OUTPUT FILE CREATED" -ForegroundColor Red
+        Write-Host $output -ForegroundColor DarkYellow
+    }
+}
+Write-Host "Finished processing all files." -ForegroundColor Green

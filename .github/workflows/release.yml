@@ -43,13 +43,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           REPO_NAME="${{ github.event.repository.name }}"
-          DIST_DIR="dist/${REPO_NAME}-${VERSION}"
 
-          # 1. Create a clean distribution directory structure
-          mkdir -p "$DIST_DIR"
+          # 1. Define a temporary build directory outside of your repository root 
+          # to prevent rsync from copying it recursively
+          STAGE_DIR="/tmp/release-stage/${REPO_NAME}-${VERSION}"
+          mkdir -p "$STAGE_DIR"
 
-          # 2. Copy all your scripts and repository files into the distribution folder
-          rsync -rr --exclude='.git*' . "$DIST_DIR"
+          # 2. Copy all your scripts and repository files into the staging folder
+          # Excludes hidden files/dirs like .git and .github
+          rsync -rr --exclude='.git*' . "$STAGE_DIR"
 
           # 3. Clean up the markdown text:
           #    - Drop all shields.io and visitor-badge lines
@@ -60,12 +62,12 @@ jobs:
             | sed 's/> \[\!WARNING\]/> **WARNING:**/' \
             > /tmp/README.md
 
-          # 4. Generate README.html directly into the distribution folder
-          pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o "${DIST_DIR}/README.html"
+          # 4. Generate README.html directly into the staging folder
+          pandoc /tmp/README.md -f gfm -t html -s --embed-resources --standalone -o "${STAGE_DIR}/README.html"
 
-          # 5. Compress the folder into custom zip file
-          cd dist
-          zip -r "../${REPO_NAME}-${VERSION}.zip" "${REPO_NAME}-${VERSION}"
+          # 5. Compress the folder from the temporary location into your workspace root
+          cd /tmp/release-stage
+          zip -r "${GITHUB_WORKSPACE}/${REPO_NAME}-${VERSION}.zip" "${REPO_NAME}-${VERSION}"
 
       - name: Dry run notice
         if: ${{ github.event.inputs.dry_run == 'true' }}

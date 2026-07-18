@@ -49,12 +49,15 @@ jobs:
           mkdir -p "$DIST_DIR"
 
           # 2. Copy all your scripts and repository files into the distribution folder
-          # Excludes hidden files/dirs like .git and .github
           rsync -rr --exclude='.git*' . "$DIST_DIR"
 
-          # 3. Strip badges and inject version under the README.html title
-          grep -v 'img.shields.io\|sonarcloud.io/api/project_badges' README.md \
-            | sed "s/^# \(.*\)/# \1\n\n**Version:** ${VERSION}/" \
+          # 3. Clean up the markdown text:
+          #    - Drop all shields.io and visitor-badge lines
+          #    - Inject the version number ONLY under the first main title
+          #    - Convert GitHub's special '> [!WARNING]' callout into standard markdown bold
+          grep -vi 'shields.io\|badge' README.md \
+            | awk -v ver="${VERSION}" '!done && /^# / { print $0 "\n\n**Version:** " ver; done=1; next } 1' \
+            | sed 's/> \[\!WARNING\]/> **WARNING:**/' \
             > /tmp/README.md
 
           # 4. Generate README.html directly into the distribution folder

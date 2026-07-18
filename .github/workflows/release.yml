@@ -77,6 +77,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             *.zip
-            *.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

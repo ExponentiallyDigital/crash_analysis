@@ -1,10 +1,23 @@
-#!/usr/bin/env python3
-"""
-DDR5 Refresh Counter Defect Forensic Analyzer - automated techniques for refresh-count-dependent RAM failures
-
+r"""
+Memory Corruption Investigation Report Generator
+------------------------------------------------
 Usage:
-    python C:\Users\andrew\Documents\crash_analysis\ddr5_analyzer.py --logs "C:\CrashDumps\FullDump_*.txt" --output report
+    python C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-report.py -i <input_directory> -o <output.html>
 
+Arguments:
+    -i, --input-dir   Directory containing forensic JSON files
+                      (produced by ddr5_analyser-extract.ps1)
+    -o, --output      Path for the final HTML report
+
+Example:
+    python ddr5_analyzer.py -i C:\json -o report.html
+
+Description:
+    Reads all JSON files in the input directory, aggregates crash dump
+    evidence, and produces a self‑contained HTML report suitable for
+    warranty submissions. The report focuses on controlled DIMM isolation
+    testing as primary evidence, with crash dump analysis as supporting
+    corroboration.
 """
 
 import argparse, json, glob, os, re, statistics, html as html_module
@@ -20,7 +33,7 @@ def parse_args():
 def load_jsons(dir_path):
     crashes = []
     for f in sorted(glob.glob(os.path.join(dir_path, '*.json'))):
-        with open(f, encoding='utf-8') as fh:
+        with open(f, encoding='utf-8-sig') as fh:   # ← add encoding here
             crashes.append((os.path.basename(f), json.load(fh)))
     return crashes
 
@@ -263,7 +276,7 @@ function toggle(id) {{ var el = document.getElementById(id); el.style.display = 
 </script>
 </head><body>
 <h1>Memory Corruption Investigation Report<br><small>Isolation of ADATA DIMM serial ending 694</small></h1>
-<p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (immutable evidence copy – point 12)</p>
+<p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
 
 <!-- Executive Summary -->
 <div class="section good">

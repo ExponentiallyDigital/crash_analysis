@@ -1,254 +1,336 @@
-# =====================================================
-# Batch DMP Analyzer (DDR5 Edition)
-# =====================================================
-# Usage:
-#   .\Analyze-DDR5.ps1 -DumpDirectory "C:\CrashDumps"
-# =====================================================
+<#
+.SYNOPSIS
+    DDR5 forensic extractor
+    Collects crash evidence (PTE, PFN, pool, WHEA, MCA, uptime, SMBIOS, BIOS/AGESA)
+
+.USAGE
+    C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-extract.ps1 -DumpFolder "C:\CrashDumps" -OutputFolder "C:\CrashDumps"
+
+#>
 
 param(
-    # Change this to your folder or pass it on the command line
-    [string]$DumpDirectory = "C:\CrashDumps"
+    [Parameter(Mandatory)][string]$DumpFolder,
+    [Parameter(Mandatory)][string]$OutputFolder,
+    [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols"
 )
 
-# Path to cdb.exe (WinDbg console debugger)
-$debuggerPath = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
 
-# ────────────────────────────────────────────────
-# Verify debugger exists
-# ────────────────────────────────────────────────
-if (-not (Test-Path $debuggerPath)) {
-    Write-Host "ERROR: cdb.exe not found at: $debuggerPath" -ForegroundColor Red
-    exit 1
+function Invoke-Cdb {
+    param([string]$DumpPath, [string]$Commands)
+
+    # Build the full argument string (traditional .NET Framework style)
+    $arguments = "-z `"$DumpPath`" -y `"$SymbolPath`" -c `"$Commands; q`""
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+    $psi.Arguments = $arguments
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+    $out = $proc.StandardOutput.ReadToEnd()
+    $proc.WaitForExit()
+
+    # Return trimmed lines, skip empty
+    ($out -split "`r`n|`n") | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' }
+}
+ 
+function Is-KernelVA([string]$hex) {
+    $clean = $hex.Replace('`','').ToLower()
+    return $clean -match '^0xffff[89a-f][0-9a-f]{11}$'
 }
 
-$dumpFiles = Get-ChildItem -Path $DumpDirectory -Filter "*.dmp" -File
-
-if ($dumpFiles.Count -eq 0) {
-    Write-Host "No .dmp files found in $DumpDirectory" -ForegroundColor Red
-    exit
+$bugCheckMap = @{
+    "12B" = "FAULTY_HARDWARE_CORRUPTED_PAGE"
+    "7A"  = "KERNEL_DATA_INPAGE_ERROR"
+    "164" = "WIN32K_CRITICAL_FAILURE"
 }
 
-Write-Host "Found $($dumpFiles.Count) dump file(s). Starting..." -ForegroundColor Green
+Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
+    $DumpPath = $_.FullName
+    $base = $_.BaseName
+    $jsonOut = Join-Path $OutputFolder "$base.json"
+    Write-Host "Processing $($_.Name) ..." -ForegroundColor Cyan
 
-foreach ($dumpFile in $dumpFiles) {
-    $dumpPath = $dumpFile.FullName
-    $txtPath  = [System.IO.Path]::ChangeExtension($dumpPath, ".txt")
-
-    Write-Host "Processing: $($dumpFile.Name)  →  $txtPath" -ForegroundColor Cyan
-
-    # We inject the dynamic output filename at the top
-    $commands = ".logopen `"$txtPath`"`n"
-    
-    # We use a single-quoted string block (@' ... '@) for the rest so PowerShell 
-    # doesn't accidentally evaluate your $t0/$t1 pseudo-registers or $$ symbols.
-    $commands += @'
-$$ ==========================================================================================================
-$$ DDR5 refresh defect advanced forensic memory dump extraction
-$$ ==========================================================================================================
-
-.block { .symfix; .reload }
-
-$$ ============================================================
-$$ SECTION 1: METADATA
-$$ ============================================================
-.echo ###SECTION:METADATA###
-!sysinfo machineid
-!sysinfo cpuspeed
-
-$$ ============================================================
-$$ SECTION 2: BUGCHECK
-$$ ============================================================
-.echo ###SECTION:BUGCHECK###
-!analyze -v
-r $t0 = @$bugcheck
-r $t1 = @$bugcheckparam1
-r $t2 = @$bugcheckparam2
-r $t3 = @$bugcheckparam3
-r $t4 = @$bugcheckparam4
-.echo BUGCHECK_CODE = 0x${$t0}
-.echo BUGCHECK_P1 = ${$t1}
-.echo BUGCHECK_P2 = ${$t2}
-.echo BUGCHECK_P3 = ${$t3}
-.echo BUGCHECK_P4 = ${$t4}
-
-$$ ============================================================
-$$ SECTION 3: CORRUPTION VA & PTE RESOLUTION
-$$ ============================================================
-.echo ###SECTION:CORRUPTION###
-r $t5 = @$bugcheckparam1
-
-$$ Smart Address Safeguard: If param1 is a subcode/error code instead of a VA, 
-$$ redirect the scanner to the true exception address or faulting instruction pointer.
-.if (${$t5} < 0x1000)
-{
-    r $t5 = @$exaddress
-    .if (${$t5} < 0x1000) { r $t5 = @$ip }
-}
-
-.echo CORRUPTED_VA = ${$t5}
-
-.if (@$ptrsize == 8)
-{
-    .if (${$t5} >= 0xffff000000000000) { .echo VA_TYPE = KERNEL }
-    .elsif (${$t5} < 0x00007fff00000000) { .echo VA_TYPE = USER }
-    .else { .echo VA_TYPE = OTHER }
-}
-
-$$ Full PTE walk - dumps all 4 levels
-!pte ${$t5}
-
-$$ Try to extract PTE entry values manually for cleaner parsing
-$$ This reads the PTE entry itself
-r $t6 = ${$t5}
-!pte ${$t6}
-
-$$ ============================================================
-$$ SECTION 4: PFN DEEP DIVE
-$$ ============================================================
-.echo ###SECTION:PFN###
-$$ We need to extract PFN from !pte output. Try !vtop as alternative.
-.process
-!vtop 0 ${$t5}
-
-$$ Also dump PFN database entry if we can infer PFN
-$$ The !pte output will show "pfn XXXXX" which we parse in Python
-
-$$ ============================================================
-$$ SECTION 5: FULL CONTENT DUMP (4KB page)
-$$ ============================================================
-.echo ###SECTION:CONTENT###
-.echo DUMP_START_VA = ${$t5}
-$$ 4KB in qwords = 512 entries. Dump first 64 for speed, full page if needed.
-dq ${$t5} L64
-db ${$t5} L100
-
-$$ ============================================================
-$$ SECTION 6: ADJACENT ROW GHOST HUNTING
-$$ ============================================================
-.echo ###SECTION:ADJACENT###
-$$ DDR5 row sizes: 1KB (0x400), 2KB (0x800). Check multiples.
-.echo ADJACENT_MINUS_800
-dq ${$t5}-0x800 L16
-.echo ADJACENT_MINUS_400
-dq ${$t5}-0x400 L16
-.echo ADJACENT_PLUS_400
-dq ${$t5}+0x400 L16
-.echo ADJACENT_PLUS_800
-dq ${$t5}+0x800 L16
-.echo ADJACENT_PLUS_1000
-dq ${$t5}+0x1000 L16
-.echo ADJACENT_PLUS_2000
-dq ${$t5}+0x2000 L16
-.echo ADJACENT_PLUS_4000
-dq ${$t5}+0x4000 L16
-
-$$ ============================================================
-$$ SECTION 7: POOL HEADER FORENSICS
-$$ ============================================================
-.echo ###SECTION:POOL###
-!pool ${$t5}
-!address ${$t5}
-
-$$ Try to dump POOL_HEADER if this is pool memory
-$$ POOL_HEADER is 16 bytes before allocation start for x64
-$$ !pool tells us the allocation base; we dump header there
-
-$$ ============================================================
-$$ SECTION 8: OBJECT VALIDATION
-$$ ============================================================
-.echo ###SECTION:OBJECT###
-$$ Only works if VA is a kernel object. Wrap in try/catch equivalent.
-.foreach /pS 1 (obj { !object ${$t5} }) { .echo OBJECT_INFO = obj }
-
-$$ ============================================================
-$$ SECTION 9: CALL STACK & CONTEXT
-$$ ============================================================
-.echo ###SECTION:STACK###
-kL
-
-.echo ###SECTION:REGISTERS###
-r
-
-$$ ============================================================
-$$ SECTION 10: TIMER & DPC STATE
-$$ ============================================================
-.echo ###SECTION:TIMERS###
-!timer
-
-.echo ###SECTION:DPC###
-!dpcs
-
-$$ ============================================================
-$$ SECTION 11: SYSTEM STATE
-$$ ============================================================
-.echo ###SECTION:VM###
-!vm 1
-
-.echo ###SECTION:MEMUSAGE###
-!memusage
-
-$$ ============================================================
-$$ SECTION 12: THREAD/PROCESS CONTEXT
-$$ ============================================================
-.echo ###SECTION:THREAD###
-!thread
-
-.echo ###SECTION:PROCESS###
-!process
-
-$$ ============================================================
-$$ SECTION 13: IRQL & INTERRUPT STATE
-$$ ============================================================
-.echo ###SECTION:IRQL###
-!irql
-
-$$ ============================================================
-$$ SECTION 14: BIT-FLIP TARGETS
-$$ ============================================================
-.echo ###SECTION:BITFLIP###
-$$ Dump common pointer fields near corruption to look for single-bit errors
-$$ If param1 is a pointer, dump it and nearby qwords
-r $t7 = qwo(${$t5})
-r $t8 = qwo(${$t5}+8)
-r $t9 = qwo(${$t5}+16)
-r $t10 = qwo(${$t5}+24)
-.echo QWORD_0 = ${$t7}
-.echo QWORD_1 = ${$t8}
-.echo QWORD_2 = ${$t9}
-.echo QWORD_3 = ${$t10}
-
-$$ If these look like kernel pointers, note them for XOR analysis
-.if (${$t7} >= 0xffff000000000000)
-{
-    .echo QWORD_0_IS_KERNEL_PTR = YES
-}
-.if (${$t8} >= 0xffff000000000000)
-{
-    .echo QWORD_1_IS_KERNEL_PTR = YES
-}
-
-.logclose
-q
-'@
-
-    # Run cdb by piping the standard input stream
-    Write-Host "  Launching cdb..." -NoNewline
-    $output = $commands | & $debuggerPath -z "$dumpPath" -c ".logopen nul" 2>&1
-
-    if ($?) {
-        Write-Host " OK" -ForegroundColor Green
+    # Symbol handling: use user path if provided, else default
+    if ($SymbolPath -ne "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols") {
+        $symCmd = ".sympath+ $SymbolPath; .reload /f"
     } else {
-        Write-Host " FAILED" -ForegroundColor Red
-        Write-Host $output -ForegroundColor DarkYellow
+        $symCmd = ".symfix; .reload /f"
+    }
+    $alines = Invoke-Cdb $DumpPath "$symCmd; !analyze -v"
+    $aBlock = $alines -join "`n"
+
+    # BugCheck line – multiple patterns
+    $bugCheckLine = $null
+    foreach ($line in $alines) {
+        if ($line -match '^BugCheck\s|^BUGCHECK_CODE:\s|^BugCheckCode\s') {
+            $bugCheckLine = $line
+            break
+        }
+    }
+    if (-not $bugCheckLine) { Write-Warning "No BugCheck line in $($_.Name)"; continue }
+
+    $bugCheckCode = $null; $paramStrings = @()
+    if ($bugCheckLine -match 'BugCheck\s+([0-9A-Fa-f]+),\s*\{(.*)\}') {
+        $bugCheckCode = "0x$($Matches[1])"
+        $paramStrings = $Matches[2] -split ',\s*' | ForEach-Object { $_.Trim() }
+    } elseif ($bugCheckLine -match '^BUGCHECK_CODE:\s+([0-9A-Fa-f]+)') {
+        $bugCheckCode = "0x$($Matches[1])"
+        $paramMatch = [regex]::Match($aBlock, 'Arg1: ([0-9a-fA-F`]+).*Arg2: ([0-9a-fA-F`]+).*Arg3: ([0-9a-fA-F`]+).*Arg4: ([0-9a-fA-F`]+)')
+        if ($paramMatch.Success) {
+            $paramStrings = @($paramMatch.Groups[1].Value, $paramMatch.Groups[2].Value, $paramMatch.Groups[3].Value, $paramMatch.Groups[4].Value)
+        }
+    } else { continue }
+
+    $codeSuffix = $bugCheckCode.Substring(2).ToUpper()
+    $bugCheckName = if ($bugCheckMap.ContainsKey($codeSuffix)) {
+        $bugCheckMap[$codeSuffix]
+    } else {
+        $bcNameMatch = [regex]::Match($aBlock, '([A-Z_]+)\s*\(([0-9A-Fa-f]+)\)')
+        if ($bcNameMatch.Success -and $bcNameMatch.Groups[2].Value -eq $codeSuffix) {
+            $bcNameMatch.Groups[1].Value
+        } else { "UNKNOWN" }
     }
 
-    # Verify Output
-    if (Test-Path $txtPath) {
-        $size = (Get-Item $txtPath).Length / 1KB
-        Write-Host "  → Created: $txtPath  ($([math]::Round($size,1)) KB)" -ForegroundColor Green
-    } else {
-        Write-Host "  → NO OUTPUT FILE CREATED" -ForegroundColor Red
-        Write-Host $output -ForegroundColor DarkYellow
+    $params = for ($i=0; $i -lt $paramStrings.Count; $i++) {
+        [PSCustomObject]@{ index = $i+1; value = "0x" + ($paramStrings[$i] -replace '[`'']'); description = "" }
     }
+
+    # Faulting IP
+    $faultIPRaw = $null
+    $ipCtx = $alines | Select-String "FAULTING_IP:" -SimpleMatch -Context 0,1
+    if ($ipCtx -and $ipCtx.Context.PostContext[0] -match '^\s*([0-9a-fA-F`]+)') {
+        $faultIPRaw = "0x" + ($Matches[1] -replace '[`'']')
+    }
+
+    # Stack
+    $stackLines = @()
+    if ($aBlock -match '(?s)STACK_TEXT:\s*\n(.*?)(?=\n[A-Z][A-Z_\s]+:|\Z)') {
+        $stackLines = $Matches[1].Trim() -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+
+    # Registers
+    $regs = @{}
+    $regBlock = ($alines | Where-Object { $_ -match '^\s*[a-z0-9]+=' }) -join "`n"
+    if ($regBlock) {
+        [regex]::Matches($regBlock, '([a-z0-9]+)=([0-9a-fA-F`]+)') | ForEach-Object {
+            $regs[$_.Groups[1].Value] = "0x" + ($_.Groups[2].Value -replace '[`'']')
+        }
+    }
+
+    $processName = if ($aBlock -match 'PROCESS_NAME:\s+(\S+)') { $Matches[1] } else { $null }
+    $imageName   = if ($aBlock -match 'IMAGE_NAME:\s+(\S+)')   { $Matches[1] } else { $null }
+    $bucketId    = if ($aBlock -match 'DEFAULT_BUCKET_ID:\s+(\S+)') { $Matches[1] } else { $null }
+    $timestamp   = if ($aBlock -match 'Debug session time:\s+(.+)') { $Matches[1].Trim() } else { $null }
+
+    $osVersionLine = $alines | Where-Object { $_ -match 'Windows \d+ Kernel' } | Select-Object -First 1
+    $osVersion = if ($osVersionLine) { $osVersionLine.Trim() } else { "Unknown" }
+
+    # Collect kernel VAs (always include Arg1)
+    $addresses = @()
+    if ($faultIPRaw -and (Is-KernelVA $faultIPRaw)) { $addresses += $faultIPRaw }
+    if ($params.Count -ge 1) {
+        $arg1 = $params[0].value
+        if (Is-KernelVA $arg1) { $addresses += $arg1 }
+    }
+    $regs.Values | Where-Object { Is-KernelVA $_ } | ForEach-Object { $addresses += $_ }
+    $params | Where-Object { Is-KernelVA $_.value } | ForEach-Object { $addresses += $_.value }
+    foreach ($line in $stackLines) {
+        if ($line -match '^([0-9a-fA-F`]+)') {
+            $addr = "0x" + ($Matches[1] -replace '[`'']')
+            if (Is-KernelVA $addr) { $addresses += $addr }
+        }
+    }
+    $uniqueVAs = $addresses | Select-Object -Unique
+
+    # !pte for each VA (best‑effort PFN extraction)
+    $pteResults = foreach ($va in $uniqueVAs) {
+        $lines = Invoke-Cdb $DumpPath "!pte $va"
+        $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+        $pfn = $null
+        if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
+        elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
+        [PSCustomObject]@{ VirtualAddress = $va; RawOutput = $raw.Trim(); PFN = $pfn }
+    }
+
+    # !address / !pool (best‑effort)
+    $addrRegions = @{}
+    foreach ($va in $uniqueVAs) {
+        $alines = Invoke-Cdb $DumpPath "!address $va"
+        $region = ($alines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+        $addrRegions[$va] = $region -match 'NonPagedPool|PagedPool'
+    }
+    $poolResults = foreach ($va in $uniqueVAs) {
+        if ($addrRegions[$va]) {
+            $lines = Invoke-Cdb $DumpPath "!pool $va"
+            $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+            [PSCustomObject]@{ Address = $va; RawOutput = $raw.Trim(); IsPool = $true }
+        } else {
+            [PSCustomObject]@{ Address = $va; RawOutput = "Not pool region"; IsPool = $false }
+        }
+    }
+
+    # Page table bases
+    $processDirBase = $userDirBase = $null
+    if ($processName) {
+        $procLines = Invoke-Cdb $DumpPath "!process 0 0 $processName"
+        $procBlock = $procLines -join "`n"
+        if ($procBlock -match '(?i)DirBase:\s+([0-9a-fA-F`]+)') {
+            $processDirBase = "0x" + ($Matches[1] -replace '[`'']')
+        }
+        if ($procBlock -match '(?i)UserDirBase:\s+([0-9a-fA-F`]+)') {
+            $userDirBase = "0x" + ($Matches[1] -replace '[`'']')
+        }
+    }
+    if (-not $processDirBase) {
+        $sysLines = Invoke-Cdb $DumpPath "!process 0 0 System"
+        if (($sysLines -join "`n") -match '(?i)DirBase:\s+([0-9a-fA-F`]+)') {
+            $processDirBase = "0x" + ($Matches[1] -replace '[`'']')
+        }
+    }
+
+    # !vtop (best‑effort)
+    $vaToPhys = foreach ($va in $uniqueVAs) {
+        $base = if (Is-KernelVA $va) { $processDirBase } else { $userDirBase }
+        if (-not $base) { continue }
+        $lines = Invoke-Cdb $DumpPath "!vtop $base $va"
+        $raw = $lines -join "`n"
+        $physAddr = $null
+        if ($raw -match 'Physical Address:\s+([0-9a-fA-F`]+)') {
+            $physAddr = "0x" + ($Matches[1] -replace '[`'']')
+        } elseif ($raw -match 'contains\s+([0-9a-f]+)') {
+            $pfnVal = "0x$($Matches[1])"
+            $offset = [System.Convert]::ToInt64($va, 16) -band 0xFFF
+            $physAddr = "0x{0:X}" -f (([System.Convert]::ToInt64($pfnVal, 16) * 0x1000) + $offset)
+        }
+        $pfn = if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { "0x$($Matches[1])" } else { $null }
+        [PSCustomObject]@{
+            VirtualAddress  = $va
+            PhysicalAddress = $physAddr
+            PFN             = $pfn
+            RawVtopOutput   = $raw.Trim()
+            Note            = "Physical address identifies the corrupted memory page observed by Windows, NOT the physical DRAM cell or DIMM."
+        }
+    }
+
+    # Phys dumps (best‑effort)
+    $physHexDumps = @()
+    $seenPhys = @{}
+    foreach ($entry in $vaToPhys) {
+        if ($entry.PhysicalAddress -and -not $seenPhys.ContainsKey($entry.PhysicalAddress)) {
+            $seenPhys[$entry.PhysicalAddress] = $true
+            $lines = Invoke-Cdb $DumpPath "!db /p $($entry.PhysicalAddress) L100"
+            $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+            $physHexDumps += [PSCustomObject]@{ PhysicalAddress = $entry.PhysicalAddress; HexDump = $raw.Trim(); PFN = $entry.PFN; Note = "Hex dump of the page Windows flagged as corrupted." }
+        }
+    }
+
+    # PFN details
+    $uniquePfns = $vaToPhys | Where-Object { $_.PFN } | Select-Object -ExpandProperty PFN -Unique
+    $pfnDetails = foreach ($pfn in $uniquePfns) {
+        $lines = Invoke-Cdb $DumpPath "!pfn $pfn"
+        $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+        [PSCustomObject]@{ PFN = $pfn; RawOutput = $raw.Trim() }
+    }
+
+    # Additional forensic commands (metadata, WHEA, MCA, SMBIOS, uptime)
+    $extraCmd = "!whea; !errrec; !sysinfo uptime; !sysinfo smbios; !sysinfo machineid; !sysinfo cpuinfo; !sysinfo cpumicrocode; !sysinfo flags; !blackboxmemory; !memmap"
+    $extraRaw = (Invoke-Cdb $DumpPath $extraCmd) -join "`n" -replace '(?m)^0: kd>.*\r?\n?'
+
+    # WHEA errors (unlikely on consumer non‑ECC)
+    $wheaErrors = @()
+    $errRecBlocks = [regex]::Split($extraRaw, '(?i)Error record.*?\{') | Where-Object { $_ -match 'Memory Error' }
+    foreach ($block in $errRecBlocks) {
+        $wheaErrors += [PSCustomObject]@{
+            Bank            = if ($block -match 'Bank:\s+(\S+)') { $Matches[1] } else { $null }
+            Rank            = if ($block -match 'Rank:\s+(\S+)') { $Matches[1] } else { $null }
+            Row             = if ($block -match 'Row:\s+(\S+)')  { $Matches[1] } else { $null }
+            Column          = if ($block -match 'Column:\s+(\S+)') { $Matches[1] } else { $null }
+            BitPosition     = if ($block -match 'Bit Position:\s+(\S+)') { $Matches[1] } else { $null }
+            PhysicalAddress = if ($block -match 'Physical Address:\s+(\S+)') { "0x" + ($Matches[1] -replace '[`'']') } else { $null }
+        }
+    }
+
+    # MCA registers (likely empty on Ryzen consumer DDR5)
+    $mcaEntries = @()
+    $lines = $extraRaw -split "`n"
+    for ($i=0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match 'MC(\d+)_STATUS:\s+(.+)') {
+            $bank   = $Matches[1]
+            $status = $Matches[2].Trim()
+            $addr   = $null
+            if ($i+1 -lt $lines.Count -and $lines[$i+1] -match "MC$bank`_ADDR:\s+([0-9a-fA-F`]+)") {
+                $addr = "0x" + ($Matches[1] -replace '[`'']')
+            }
+            $mcaEntries += [PSCustomObject]@{ Bank = $bank; Status = $status; Address = $addr }
+        }
+    }
+
+    # Timer/DPC (contextual)
+    $timerDPC = @()
+    $relevantBC = @('DPC_WATCHDOG_VIOLATION','CLOCK_WATCHDOG_TIMEOUT','IRQL_NOT_LESS_OR_EQUAL')
+    if ($bugCheckName -in $relevantBC) {
+        if ($bugCheckName -eq 'DPC_WATCHDOG_VIOLATION' -and $params.Count -ge 3) {
+            $dpcRoutine = $params[2].value
+            if (Is-KernelVA $dpcRoutine) {
+                $lines = Invoke-Cdb $DumpPath "dt nt!_KDPC $dpcRoutine; .echo END_DPC; !timer"
+                $timerDPC += [PSCustomObject]@{ Type="DPC_WATCHDOG"; Routine=$dpcRoutine; RawOutput=($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+            }
+        }
+        if ($bugCheckName -eq 'CLOCK_WATCHDOG_TIMEOUT') {
+            $lines = Invoke-Cdb $DumpPath "!timer"
+            $timerDPC += [PSCustomObject]@{ Type="CLOCK_WATCHDOG"; RawOutput=($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+        }
+        $dpcSum = Invoke-Cdb $DumpPath "!dpcs"
+        $timerDPC += [PSCustomObject]@{ Type="DPC_Summary"; RawOutput=($dpcSum -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+    }
+
+    # ---- SHA256 hash of dump file ----
+    $sha256 = (Get-FileHash -Path $DumpPath -Algorithm SHA256).Hash
+
+    # ---- Forensic chain-of-custody metadata ----
+    $extractionTime   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $extractorVersion = "2.0"   # update as needed
+    $dumpSizeBytes    = (Get-Item $DumpPath).Length
+
+    # ---- Assemble JSON (depth 100) ----
+    $result = [PSCustomObject]@{
+        DumpFile     = $_.Name
+        SHA256       = $sha256
+        Timestamp    = $timestamp
+        OSVersion    = $osVersion
+        Analysis     = [PSCustomObject]@{
+            BugCheck     = [PSCustomObject]@{ Code=$bugCheckCode; Name=$bugCheckName; Parameters=$params }
+            FaultingIP   = $faultIPRaw
+            StackText    = $stackLines
+            ProcessName  = $processName
+            ImageName    = $imageName
+            BucketId     = $bucketId
+            Registers    = $regs
+        }
+        Forensics    = [PSCustomObject]@{
+            PageTable     = $pteResults
+            Pool          = $poolResults
+            VirtualToPhys = $vaToPhys
+            PhysHexDumps  = $physHexDumps
+            PFNDetails    = $pfnDetails
+            WHEA_Errors   = $wheaErrors
+            MCA_Entries   = $mcaEntries
+            ExtraRaw      = $extraRaw
+            TimerDPC      = $timerDPC
+        }
+        ExtractionMetadata = [PSCustomObject]@{
+            ExtractorVersion = $extractorVersion
+            ExtractionUTC    = $extractionTime
+            OriginalFileSize = $dumpSizeBytes
+        }
+    }
+    $result | ConvertTo-Json -Depth 100 | Set-Content -Path $jsonOut -Encoding UTF8
+    Write-Host "  -> $jsonOut" -ForegroundColor Green
 }
-Write-Host "Finished processing all files." -ForegroundColor Green

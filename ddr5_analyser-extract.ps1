@@ -2,6 +2,7 @@
 .SYNOPSIS
     DDR5 forensic extractor
     Collects crash evidence (PTE, PFN, pool, WHEA, MCA, uptime, SMBIOS, BIOS/AGESA)
+    and adds SHA256 hashes + chain-of-custody metadata.
 
 .USAGE
     C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-extract.ps1 -DumpFolder "C:\CrashDumps" -OutputFolder "C:\CrashDumps"
@@ -18,28 +19,24 @@ New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
 
 function Invoke-Cdb {
     param([string]$DumpPath, [string]$Commands)
-
-    # Build the full argument string (traditional .NET Framework style)
-    $arguments = "-z `"$DumpPath`" -y `"$SymbolPath`" -c `"$Commands; q`""
-
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-    $psi.Arguments = $arguments
+    $psi.FileName = "cdb.exe"
+    $psi.ArgumentList.Add("-z")
+    $psi.ArgumentList.Add($DumpPath)
+    $psi.ArgumentList.Add("-y")
+    $psi.ArgumentList.Add($SymbolPath)        # user-provided path
+    $psi.ArgumentList.Add("-c")
+    $psi.ArgumentList.Add("$Commands; q")
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
-
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    $proc.Start() | Out-Null
+    $proc = [System.Diagnostics.Process]::Start($psi)
     $out = $proc.StandardOutput.ReadToEnd()
     $proc.WaitForExit()
-
-    # Return trimmed lines, skip empty
     ($out -split "`r`n|`n") | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' }
 }
- 
+
 function Is-KernelVA([string]$hex) {
     $clean = $hex.Replace('`','').ToLower()
     return $clean -match '^0xffff[89a-f][0-9a-f]{11}$'
@@ -66,7 +63,7 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     $alines = Invoke-Cdb $DumpPath "$symCmd; !analyze -v"
     $aBlock = $alines -join "`n"
 
-    # BugCheck line – multiple patterns
+    # BugCheck line - multiple patterns
     $bugCheckLine = $null
     foreach ($line in $alines) {
         if ($line -match '^BugCheck\s|^BUGCHECK_CODE:\s|^BugCheckCode\s') {
@@ -74,10 +71,13 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
             break
         }
     }
-    if (-not $bugCheckLine) { Write-Warning "No BugCheck line in $($_.Name)"; continue }
 
-    $bugCheckCode = $null; $paramStrings = @()
-    if ($bugCheckLine -match 'BugCheck\s+([0-9A-Fa-f]+),\s*\{(.*)\}') {
+    # v10: no "continue" anywhere in this block anymore (see .NOTES item 3).
+    # An unparsed dump still gets written, with these fields left empty.
+    $bugCheckCode = $null; $bugCheckName = $null; $paramStrings = @()
+    if (-not $bugCheckLine) {
+        Write-Warning "No BugCheck line in $($_.Name); bugcheck fields will be empty, other data still extracted."
+    } elseif ($bugCheckLine -match 'BugCheck\s+([0-9A-Fa-f]+),\s*\{(.*)\}') {
         $bugCheckCode = "0x$($Matches[1])"
         $paramStrings = $Matches[2] -split ',\s*' | ForEach-Object { $_.Trim() }
     } elseif ($bugCheckLine -match '^BUGCHECK_CODE:\s+([0-9A-Fa-f]+)') {
@@ -86,16 +86,22 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         if ($paramMatch.Success) {
             $paramStrings = @($paramMatch.Groups[1].Value, $paramMatch.Groups[2].Value, $paramMatch.Groups[3].Value, $paramMatch.Groups[4].Value)
         }
-    } else { continue }
-
-    $codeSuffix = $bugCheckCode.Substring(2).ToUpper()
-    $bugCheckName = if ($bugCheckMap.ContainsKey($codeSuffix)) {
-        $bugCheckMap[$codeSuffix]
     } else {
-        $bcNameMatch = [regex]::Match($aBlock, '([A-Z_]+)\s*\(([0-9A-Fa-f]+)\)')
-        if ($bcNameMatch.Success -and $bcNameMatch.Groups[2].Value -eq $codeSuffix) {
-            $bcNameMatch.Groups[1].Value
-        } else { "UNKNOWN" }
+        Write-Warning "BugCheck line found but unrecognized format in $($_.Name): $bugCheckLine"
+    }
+
+    if ($bugCheckCode) {
+        $codeSuffix = $bugCheckCode.Substring(2).ToUpper()
+        $bugCheckName = if ($bugCheckMap.ContainsKey($codeSuffix)) {
+            $bugCheckMap[$codeSuffix]
+        } else {
+            $bcNameMatch = [regex]::Match($aBlock, '([A-Z_]+)\s*\(([0-9A-Fa-f]+)\)')
+            if ($bcNameMatch.Success -and $bcNameMatch.Groups[2].Value -eq $codeSuffix) {
+                $bcNameMatch.Groups[1].Value
+            } else { "UNKNOWN" }
+        }
+    } else {
+        $bugCheckName = "UNKNOWN_PARSE_FAILED"
     }
 
     $params = for ($i=0; $i -lt $paramStrings.Count; $i++) {
@@ -149,21 +155,27 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     }
     $uniqueVAs = $addresses | Select-Object -Unique
 
-    # !pte for each VA (best‑effort PFN extraction)
+    # !pte for each VA (best-effort PFN extraction)
+    # v10: take the LAST "pfn" token on the line, not the first. See .NOTES item 1.
     $pteResults = foreach ($va in $uniqueVAs) {
         $lines = Invoke-Cdb $DumpPath "!pte $va"
         $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
         $pfn = $null
-        if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
-        elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
+        $pfnMatches = [regex]::Matches($raw, '(?i)pfn\s+([0-9a-f]+)')
+        if ($pfnMatches.Count -gt 0) {
+            $pfn = "0x" + $pfnMatches[$pfnMatches.Count - 1].Groups[1].Value
+        } elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') {
+            $pfn = "0x$($Matches[1])"
+        }
         [PSCustomObject]@{ VirtualAddress = $va; RawOutput = $raw.Trim(); PFN = $pfn }
     }
 
-    # !address / !pool (best‑effort)
+    # !address / !pool (best-effort)
+    # v10: renamed the loop variable from $alines to $alinesAddr (see .NOTES item 6).
     $addrRegions = @{}
     foreach ($va in $uniqueVAs) {
-        $alines = Invoke-Cdb $DumpPath "!address $va"
-        $region = ($alines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+        $alinesAddr = Invoke-Cdb $DumpPath "!address $va"
+        $region = ($alinesAddr -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
         $addrRegions[$va] = $region -match 'NonPagedPool|PagedPool'
     }
     $poolResults = foreach ($va in $uniqueVAs) {
@@ -195,21 +207,28 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         }
     }
 
-    # !vtop (best‑effort)
+    # !vtop (best-effort)
+    # v10: same last-match fix as !pte, plus an extra fallback pattern. See .NOTES item 2.
     $vaToPhys = foreach ($va in $uniqueVAs) {
         $base = if (Is-KernelVA $va) { $processDirBase } else { $userDirBase }
-        if (-not $base) { continue }
+        if (-not $base) { continue }   # native foreach statement, not ForEach-Object: safe as-is
         $lines = Invoke-Cdb $DumpPath "!vtop $base $va"
         $raw = $lines -join "`n"
         $physAddr = $null
         if ($raw -match 'Physical Address:\s+([0-9a-fA-F`]+)') {
             $physAddr = "0x" + ($Matches[1] -replace '[`'']')
+        } elseif ($raw -match '(?i)translates to physical address\s+([0-9a-fA-F]+)') {
+            $physAddr = "0x" + $Matches[1]
         } elseif ($raw -match 'contains\s+([0-9a-f]+)') {
             $pfnVal = "0x$($Matches[1])"
             $offset = [System.Convert]::ToInt64($va, 16) -band 0xFFF
             $physAddr = "0x{0:X}" -f (([System.Convert]::ToInt64($pfnVal, 16) * 0x1000) + $offset)
         }
-        $pfn = if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { "0x$($Matches[1])" } else { $null }
+        $pfn = $null
+        $vtopPfnMatches = [regex]::Matches($raw, '(?i)pfn\s+([0-9a-f]+)')
+        if ($vtopPfnMatches.Count -gt 0) {
+            $pfn = "0x" + $vtopPfnMatches[$vtopPfnMatches.Count - 1].Groups[1].Value
+        }
         [PSCustomObject]@{
             VirtualAddress  = $va
             PhysicalAddress = $physAddr
@@ -219,7 +238,7 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         }
     }
 
-    # Phys dumps (best‑effort)
+    # Phys dumps (best-effort)
     $physHexDumps = @()
     $seenPhys = @{}
     foreach ($entry in $vaToPhys) {
@@ -240,10 +259,11 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     }
 
     # Additional forensic commands (metadata, WHEA, MCA, SMBIOS, uptime)
-    $extraCmd = "!whea; !errrec; !sysinfo uptime; !sysinfo smbios; !sysinfo machineid; !sysinfo cpuinfo; !sysinfo cpumicrocode; !sysinfo flags; !blackboxmemory; !memmap"
+    # v10: removed !sysinfo uptime / !sysinfo flags, added .time. See .NOTES items 4-5.
+    $extraCmd = "!whea; !errrec; .time; !sysinfo smbios; !sysinfo machineid; !sysinfo cpuinfo; !sysinfo cpumicrocode; !blackboxmemory; !memmap"
     $extraRaw = (Invoke-Cdb $DumpPath $extraCmd) -join "`n" -replace '(?m)^0: kd>.*\r?\n?'
 
-    # WHEA errors (unlikely on consumer non‑ECC)
+    # WHEA errors (unlikely on consumer non-ECC)
     $wheaErrors = @()
     $errRecBlocks = [regex]::Split($extraRaw, '(?i)Error record.*?\{') | Where-Object { $_ -match 'Memory Error' }
     foreach ($block in $errRecBlocks) {
@@ -296,7 +316,7 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
 
     # ---- Forensic chain-of-custody metadata ----
     $extractionTime   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $extractorVersion = "2.0"   # update as needed
+    $extractorVersion = "2.1"   # bumped for v10; update as needed
     $dumpSizeBytes    = (Get-Item $DumpPath).Length
 
     # ---- Assemble JSON (depth 100) ----

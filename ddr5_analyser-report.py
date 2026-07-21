@@ -19,6 +19,7 @@ Description:
     chain-of-custody metadata.
 
 """
+
 import argparse
 import glob
 import html as html_module
@@ -43,7 +44,7 @@ def load_jsons(dir_path):
     paths = sorted(glob.glob(os.path.join(dir_path, "*.json")))
     for f in paths:
         try:
-            with open(f, encoding="utf-8") as fh:
+            with open(f, encoding="utf-8-sig") as fh:
                 crashes.append((os.path.basename(f), json.load(fh)))
         except Exception as e:
             errors.append((os.path.basename(f), str(e)))

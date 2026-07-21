@@ -5,35 +5,70 @@
     and adds SHA256 hashes + chain-of-custody metadata.
 
 .USAGE
-    C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-extract.ps1 -DumpFolder "C:\CrashDumps" -OutputFolder "C:\CrashDumps"
+    powershell C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-extract.ps1 -DumpFolder "C:\CrashDumps" -OutputFolder "C:\CrashDumps"
 
 #>
+
 
 param(
     [Parameter(Mandatory)][string]$DumpFolder,
     [Parameter(Mandatory)][string]$OutputFolder,
-    [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols"
+    [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols",
+    [string]$CdbPath   = "cdb.exe"   # allow override, default to PATH
 )
 
 New-Item -ItemType Directory -Force -Path $OutputFolder | Out-Null
 
 function Invoke-Cdb {
-    param([string]$DumpPath, [string]$Commands)
+    param(
+        [Parameter(Mandatory)][string]$DumpPath,
+        [Parameter(Mandatory)][string]$Commands
+    )
+
+    if (-not (Test-Path $DumpPath)) {
+        throw "Dump file not found: $DumpPath"
+    }
+
+    # Resolve cdb.exe
+    $exe = $CdbPath
+    if (-not (Test-Path $exe)) {
+        # Try PATH resolution
+        $resolved = (Get-Command $CdbPath -ErrorAction SilentlyContinue)
+        if ($resolved) {
+            $exe = $resolved.Source
+        } else {
+            throw "cdb.exe not found. Set -CdbPath to the full path of cdb.exe or ensure it is in PATH."
+        }
+    }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "cdb.exe"
-    $psi.ArgumentList.Add("-z")
-    $psi.ArgumentList.Add($DumpPath)
-    $psi.ArgumentList.Add("-y")
-    $psi.ArgumentList.Add($SymbolPath)        # user-provided path
-    $psi.ArgumentList.Add("-c")
-    $psi.ArgumentList.Add("$Commands; q")
+    $psi.FileName = $exe
+
+    # Build classic .Arguments string (ArgumentList is null on older PS/.NET)
+    # cdb.exe -z <dump> -y <symbols> -c "<commands>; q"
+    $escapedDump    = '"' + $DumpPath + '"'
+    $escapedSymbols = '"' + $SymbolPath + '"'
+    $escapedCmd     = '"' + ($Commands + '; q') + '"'
+
+    $psi.Arguments = "-z $escapedDump -y $escapedSymbols -c $escapedCmd"
     $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+
     $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc) {
+        throw "Failed to start cdb.exe with arguments: $($psi.Arguments)"
+    }
+
     $out = $proc.StandardOutput.ReadToEnd()
+    $err = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
+
+    if ($proc.ExitCode -ne 0) {
+        Write-Warning "cdb.exe exited with code $($proc.ExitCode). stderr:`n$err"
+    }
+
     ($out -split "`r`n|`n") | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' }
 }
 
@@ -84,7 +119,12 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         $bugCheckCode = "0x$($Matches[1])"
         $paramMatch = [regex]::Match($aBlock, 'Arg1: ([0-9a-fA-F`]+).*Arg2: ([0-9a-fA-F`]+).*Arg3: ([0-9a-fA-F`]+).*Arg4: ([0-9a-fA-F`]+)')
         if ($paramMatch.Success) {
-            $paramStrings = @($paramMatch.Groups[1].Value, $paramMatch.Groups[2].Value, $paramMatch.Groups[3].Value, $paramMatch.Groups[4].Value)
+            $paramStrings = @(
+                $paramMatch.Groups[1].Value,
+                $paramMatch.Groups[2].Value,
+                $paramMatch.Groups[3].Value,
+                $paramMatch.Groups[4].Value
+            )
         }
     } else {
         Write-Warning "BugCheck line found but unrecognized format in $($_.Name): $bugCheckLine"
@@ -105,7 +145,11 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     }
 
     $params = for ($i=0; $i -lt $paramStrings.Count; $i++) {
-        [PSCustomObject]@{ index = $i+1; value = "0x" + ($paramStrings[$i] -replace '[`'']'); description = "" }
+        [PSCustomObject]@{
+            index       = $i+1
+            value       = "0x" + ($paramStrings[$i] -replace '[`'']')
+            description = ""
+        }
     }
 
     # Faulting IP
@@ -118,7 +162,9 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     # Stack
     $stackLines = @()
     if ($aBlock -match '(?s)STACK_TEXT:\s*\n(.*?)(?=\n[A-Z][A-Z_\s]+:|\Z)') {
-        $stackLines = $Matches[1].Trim() -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $stackLines = $Matches[1].Trim() -split "`n" |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
     }
 
     # Registers
@@ -156,7 +202,6 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     $uniqueVAs = $addresses | Select-Object -Unique
 
     # !pte for each VA (best-effort PFN extraction)
-    # v10: take the LAST "pfn" token on the line, not the first. See .NOTES item 1.
     $pteResults = foreach ($va in $uniqueVAs) {
         $lines = Invoke-Cdb $DumpPath "!pte $va"
         $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
@@ -167,11 +212,14 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         } elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') {
             $pfn = "0x$($Matches[1])"
         }
-        [PSCustomObject]@{ VirtualAddress = $va; RawOutput = $raw.Trim(); PFN = $pfn }
+        [PSCustomObject]@{
+            VirtualAddress = $va
+            RawOutput      = $raw.Trim()
+            PFN            = $pfn
+        }
     }
 
     # !address / !pool (best-effort)
-    # v10: renamed the loop variable from $alines to $alinesAddr (see .NOTES item 6).
     $addrRegions = @{}
     foreach ($va in $uniqueVAs) {
         $alinesAddr = Invoke-Cdb $DumpPath "!address $va"
@@ -182,9 +230,17 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
         if ($addrRegions[$va]) {
             $lines = Invoke-Cdb $DumpPath "!pool $va"
             $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
-            [PSCustomObject]@{ Address = $va; RawOutput = $raw.Trim(); IsPool = $true }
+            [PSCustomObject]@{
+                Address   = $va
+                RawOutput = $raw.Trim()
+                IsPool    = $true
+            }
         } else {
-            [PSCustomObject]@{ Address = $va; RawOutput = "Not pool region"; IsPool = $false }
+            [PSCustomObject]@{
+                Address   = $va
+                RawOutput = "Not pool region"
+                IsPool    = $false
+            }
         }
     }
 
@@ -208,10 +264,9 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     }
 
     # !vtop (best-effort)
-    # v10: same last-match fix as !pte, plus an extra fallback pattern. See .NOTES item 2.
     $vaToPhys = foreach ($va in $uniqueVAs) {
         $base = if (Is-KernelVA $va) { $processDirBase } else { $userDirBase }
-        if (-not $base) { continue }   # native foreach statement, not ForEach-Object: safe as-is
+        if (-not $base) { continue }
         $lines = Invoke-Cdb $DumpPath "!vtop $base $va"
         $raw = $lines -join "`n"
         $physAddr = $null
@@ -246,7 +301,12 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
             $seenPhys[$entry.PhysicalAddress] = $true
             $lines = Invoke-Cdb $DumpPath "!db /p $($entry.PhysicalAddress) L100"
             $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
-            $physHexDumps += [PSCustomObject]@{ PhysicalAddress = $entry.PhysicalAddress; HexDump = $raw.Trim(); PFN = $entry.PFN; Note = "Hex dump of the page Windows flagged as corrupted." }
+            $physHexDumps += [PSCustomObject]@{
+                PhysicalAddress = $entry.PhysicalAddress
+                HexDump         = $raw.Trim()
+                PFN             = $entry.PFN
+                Note            = "Hex dump of the page Windows flagged as corrupted."
+            }
         }
     }
 
@@ -255,11 +315,13 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
     $pfnDetails = foreach ($pfn in $uniquePfns) {
         $lines = Invoke-Cdb $DumpPath "!pfn $pfn"
         $raw = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
-        [PSCustomObject]@{ PFN = $pfn; RawOutput = $raw.Trim() }
+        [PSCustomObject]@{
+            PFN       = $pfn
+            RawOutput = $raw.Trim()
+        }
     }
 
     # Additional forensic commands (metadata, WHEA, MCA, SMBIOS, uptime)
-    # v10: removed !sysinfo uptime / !sysinfo flags, added .time. See .NOTES items 4-5.
     $extraCmd = "!whea; !errrec; .time; !sysinfo smbios; !sysinfo machineid; !sysinfo cpuinfo; !sysinfo cpumicrocode; !blackboxmemory; !memmap"
     $extraRaw = (Invoke-Cdb $DumpPath $extraCmd) -join "`n" -replace '(?m)^0: kd>.*\r?\n?'
 
@@ -288,7 +350,11 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
             if ($i+1 -lt $lines.Count -and $lines[$i+1] -match "MC$bank`_ADDR:\s+([0-9a-fA-F`]+)") {
                 $addr = "0x" + ($Matches[1] -replace '[`'']')
             }
-            $mcaEntries += [PSCustomObject]@{ Bank = $bank; Status = $status; Address = $addr }
+            $mcaEntries += [PSCustomObject]@{
+                Bank    = $bank
+                Status  = $status
+                Address = $addr
+            }
         }
     }
 
@@ -300,15 +366,25 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
             $dpcRoutine = $params[2].value
             if (Is-KernelVA $dpcRoutine) {
                 $lines = Invoke-Cdb $DumpPath "dt nt!_KDPC $dpcRoutine; .echo END_DPC; !timer"
-                $timerDPC += [PSCustomObject]@{ Type="DPC_WATCHDOG"; Routine=$dpcRoutine; RawOutput=($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+                $timerDPC += [PSCustomObject]@{
+                    Type      = "DPC_WATCHDOG"
+                    Routine   = $dpcRoutine
+                    RawOutput = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+                }
             }
         }
         if ($bugCheckName -eq 'CLOCK_WATCHDOG_TIMEOUT') {
             $lines = Invoke-Cdb $DumpPath "!timer"
-            $timerDPC += [PSCustomObject]@{ Type="CLOCK_WATCHDOG"; RawOutput=($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+            $timerDPC += [PSCustomObject]@{
+                Type      = "CLOCK_WATCHDOG"
+                RawOutput = ($lines -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+            }
         }
         $dpcSum = Invoke-Cdb $DumpPath "!dpcs"
-        $timerDPC += [PSCustomObject]@{ Type="DPC_Summary"; RawOutput=($dpcSum -join "`n") -replace '(?m)^0: kd>.*\r?\n?' }
+        $timerDPC += [PSCustomObject]@{
+            Type      = "DPC_Summary"
+            RawOutput = ($dpcSum -join "`n") -replace '(?m)^0: kd>.*\r?\n?'
+        }
     }
 
     # ---- SHA256 hash of dump file ----
@@ -316,25 +392,29 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
 
     # ---- Forensic chain-of-custody metadata ----
     $extractionTime   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $extractorVersion = "2.1"   # bumped for v10; update as needed
+    $extractorVersion = "2.1"
     $dumpSizeBytes    = (Get-Item $DumpPath).Length
 
     # ---- Assemble JSON (depth 100) ----
     $result = [PSCustomObject]@{
-        DumpFile     = $_.Name
-        SHA256       = $sha256
-        Timestamp    = $timestamp
-        OSVersion    = $osVersion
-        Analysis     = [PSCustomObject]@{
-            BugCheck     = [PSCustomObject]@{ Code=$bugCheckCode; Name=$bugCheckName; Parameters=$params }
-            FaultingIP   = $faultIPRaw
-            StackText    = $stackLines
-            ProcessName  = $processName
-            ImageName    = $imageName
-            BucketId     = $bucketId
-            Registers    = $regs
+        DumpFile  = $_.Name
+        SHA256    = $sha256
+        Timestamp = $timestamp
+        OSVersion = $osVersion
+        Analysis  = [PSCustomObject]@{
+            BugCheck    = [PSCustomObject]@{
+                Code       = $bugCheckCode
+                Name       = $bugCheckName
+                Parameters = $params
+            }
+            FaultingIP  = $faultIPRaw
+            StackText   = $stackLines
+            ProcessName = $processName
+            ImageName   = $imageName
+            BucketId    = $bucketId
+            Registers   = $regs
         }
-        Forensics    = [PSCustomObject]@{
+        Forensics = [PSCustomObject]@{
             PageTable     = $pteResults
             Pool          = $poolResults
             VirtualToPhys = $vaToPhys
@@ -351,6 +431,7 @@ Get-ChildItem $DumpFolder -Filter *.dmp | ForEach-Object {
             OriginalFileSize = $dumpSizeBytes
         }
     }
+
     $result | ConvertTo-Json -Depth 100 | Set-Content -Path $jsonOut -Encoding UTF8
     Write-Host "  -> $jsonOut" -ForegroundColor Green
 }

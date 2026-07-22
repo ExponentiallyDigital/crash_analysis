@@ -2,28 +2,30 @@
 .SYNOPSIS
   Extracts candidate corrupted-memory addresses from 0x139
   KERNEL_SECURITY_CHECK_FAILURE dumps by reading the actual fault context
-  (trap frame / exception record reported in BUGCHECK_P2 / BUGCHECK_P3),
-  rather than scanning every live timer object in the system. Correlates
-  resulting physical addresses across multiple dump files.
+  (trap frame / exception record from BUGCHECK_P2 / BUGCHECK_P3), rather
+  than scanning every live timer object. Correlates resulting physical
+  addresses across multiple dump files, both exact matches and near
+  misses within a configurable byte distance.
 
 .NOTES
-  This assumes all dumps are 0x139 bugchecks. Dumps with a different
-  bugcheck code are skipped, since the fault-context extraction logic
-  below (trap frame + exception record from BUGCHECK_P2/P3) is specific
-  to 0x139's parameter layout.
-
-  Which register or stack slot actually holds the corrupted structure's
-  pointer varies by corruption type (LIST_ENTRY, RBTree node, vtable,
-  stack cookie, etc - see BUGCHECK_P1). This script does not try to guess
-  which single candidate is "the" one; it collects every kernel-space
-  pointer visible in the register set and top of stack at the fault, and
-  lets the cross-dump physical-address correlation do the filtering. You
-  should sanity-check the exported CSVs, not just trust row 1.
-
-  cdb/dbgeng output formatting can vary slightly by OS build and symbol
-  availability. If BUGCHECK_P1/P2/P3 or !pte's "pfn" line don't match on
-  your dumps, run one dump manually first and adjust the regexes below to
-  match what your cdb version actually prints before trusting the batch.
+  v3 changes from the previous version:
+    - Code/data page exclusion now checks each candidate VA against the
+      full address range of every loaded module (from lm), not just
+      whether ln resolves it to a named function. The v2 filter missed
+      addresses inside a module's data/rodata sections because those
+      often aren't symbolized, which let kernel-image addresses (e.g.
+      early low-physical-memory structures) leak through as false
+      "recurring" hits.
+    - dps output parsing now only takes the VALUE column (second hex
+      token per line), not the stack slot's own address (first hex
+      token). The old regex captured both, which produced long runs of
+      addresses incrementing by 8 - that was just each dump's own stack
+      being read back, not distinct pointers.
+    - Added proximity correlation (PhysicalAddress-NearMatches.csv) in
+      addition to exact-match correlation, since ASLR/physical frame
+      selection differs per boot and a genuine repeat hit on a bad DRAM
+      cell may land at slightly different addresses within the same
+      general area rather than bit-for-bit identical ones.
 #>
 
 param(
@@ -32,7 +34,8 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputFolder,
     [string]$CDB = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe",
-    [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols"
+    [string]$SymbolPath = "srv*C:\Symbols*https://msdl.microsoft.com/download/symbols",
+    [int64]$ProximityThresholdBytes = 0x10000
 )
 
 if (-not (Test-Path $OutputFolder)) {
@@ -78,10 +81,11 @@ function Is-KernelVA([string]$hex) {
     return ("0x$clean") -match '^0xffff[89a-f][0-9a-f]{11}$'
 }
 
-# !pte reliably prints a line containing "pfn <hex>" for the PTE mapping the VA.
-# Deliberately no fallback to parsing a "contains <hex>" value as a PFN - that
-# field is the raw 64-bit PTE (address + flag bits), not a bare PFN, and using
-# it directly as one produces a physical address that isn't real.
+function Hex-ToInt64([string]$hex) {
+    $clean = (Get-HexClean $hex) -replace '^0x'
+    return [Convert]::ToInt64($clean, 16)
+}
+
 function Get-PfnFromPte([string[]]$pteLines) {
     $raw = $pteLines -join "`n"
     if ($raw -match '(?im)^\s*pfn\s+([0-9a-f]+)') { return $Matches[1] }
@@ -90,21 +94,32 @@ function Get-PfnFromPte([string[]]$pteLines) {
 
 function PFN-To-Physical([string]$pfnStr, [string]$va) {
     try {
-        $pfn = [Convert]::ToInt64($pfnStr, 16)
-        $vaClean = (Get-HexClean $va) -replace '^0x'
-        $vaInt = [Convert]::ToInt64($vaClean, 16)
+        $pfn = Hex-ToInt64 $pfnStr
+        $vaInt = Hex-ToInt64 $va
         return "0x{0:X}" -f (($pfn * 0x1000) + ($vaInt -band 0xFFF))
     } catch { return $null }
 }
 
-# Is this VA inside a loaded module's *code* range? Resolved dynamically per
-# dump via ln, instead of hardcoding a PFN that happened to be kernel code on
-# one particular boot. Nonpaged pool / heap addresses generally fall outside
-# any module's image range and won't resolve this way.
-function Is-LikelyCodePage([string]$dumpPath, [string]$va) {
-    $lnLines = Invoke-Cdb -DumpPath $dumpPath -Commands "ln $va"
-    $joined = $lnLines -join ' '
-    return ($joined -match '(nt!|\.sys!)\S*\+0x[0-9a-f]+')
+function Get-ModuleRanges([string]$dumpPath) {
+    $lmLines = Invoke-Cdb -DumpPath $dumpPath -Commands "lm"
+    $ranges = @()
+    foreach ($line in $lmLines) {
+        if ($line -match '^\s*([0-9a-fA-F`]{8,17})\s+([0-9a-fA-F`]{8,17})\s+(\S+)') {
+            try {
+                $start = Hex-ToInt64 $Matches[1]
+                $end   = Hex-ToInt64 $Matches[2]
+                $ranges += [PSCustomObject]@{ Start = $start; End = $end; Name = $Matches[3] }
+            } catch { }
+        }
+    }
+    return $ranges
+}
+
+function Is-InAnyModule([int64]$vaInt, $moduleRanges) {
+    foreach ($r in $moduleRanges) {
+        if ($vaInt -ge $r.Start -and $vaInt -le $r.End) { return $true }
+    }
+    return $false
 }
 
 $dumps = Get-ChildItem -Path $DumpFolder -Filter *.dmp | Sort-Object Name
@@ -114,7 +129,6 @@ foreach ($dump in $dumps) {
     $dumpPath = $dump.FullName
     Write-Host "`n===== Processing $($dump.Name) =====" -ForegroundColor Yellow
 
-    # --- Bugcheck code + parameters ---
     $analyzeLines = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v"
     $joinedAnalyze = $analyzeLines -join "`n"
 
@@ -133,14 +147,13 @@ foreach ($dump in $dumps) {
         continue
     }
     if (Is-ZeroOrEmpty $p2) {
-        Write-Host "  No usable trap frame address (BUGCHECK_P2 is zero/empty) - skipping fault-context extraction for this dump." -ForegroundColor DarkYellow
+        Write-Host "  No usable trap frame address - skipping this dump." -ForegroundColor DarkYellow
         continue
     }
 
-    # --- Restore fault context, then dump registers + top of stack ---
-    # .trap on the reported trap frame address restores CPU context at the
-    # moment of the fault, so r and dps below reflect the actual failing
-    # state rather than the bugcheck handler's own context.
+    $moduleRanges = Get-ModuleRanges -dumpPath $dumpPath
+    Write-Host "  Loaded module ranges captured: $($moduleRanges.Count)"
+
     $trapCmd = if (-not (Is-ZeroOrEmpty $p3)) {
         ".trap 0x$p2; .exr 0x$p3; r; dps @rsp L10"
     } else {
@@ -148,14 +161,19 @@ foreach ($dump in $dumps) {
     }
     $ctxLines = Invoke-Cdb -DumpPath $dumpPath -Commands $trapCmd
 
-    # Collect every kernel-space hex value visible in the register set and
-    # the first 16 stack slots as a candidate. Broader than "the one true
-    # address" on purpose - see NOTES above.
     $candidateVAs = @()
     foreach ($line in $ctxLines) {
-        $hexMatches = [regex]::Matches($line, '([0-9a-fA-F`]{12,17})')
-        foreach ($m in $hexMatches) {
-            $candidate = "0x" + (Get-HexClean $m.Value)
+        if ($line -match '=') {
+            $hexMatches = [regex]::Matches($line, '([0-9a-fA-F`]{12,17})')
+            foreach ($m in $hexMatches) {
+                $candidate = "0x" + (Get-HexClean $m.Value)
+                if ((Is-KernelVA $candidate) -and ($candidateVAs -notcontains $candidate)) {
+                    $candidateVAs += $candidate
+                }
+            }
+        }
+        elseif ($line -match '^\s*[0-9a-fA-F`]{8,17}\s+([0-9a-fA-F`]{8,17})') {
+            $candidate = "0x" + (Get-HexClean $Matches[1])
             if ((Is-KernelVA $candidate) -and ($candidateVAs -notcontains $candidate)) {
                 $candidateVAs += $candidate
             }
@@ -165,11 +183,12 @@ foreach ($dump in $dumps) {
     Write-Host "  Candidate kernel VAs from fault context: $($candidateVAs.Count)"
 
     foreach ($va in $candidateVAs) {
+        $vaInt = Hex-ToInt64 $va
+        if (Is-InAnyModule $vaInt $moduleRanges) { continue }
+
         $pteLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!pte $va"
         $pfn = Get-PfnFromPte $pteLines
         if (-not $pfn) { continue }
-
-        if (Is-LikelyCodePage $dumpPath $va) { continue }
 
         $phys = PFN-To-Physical $pfn $va
         if ($phys) {
@@ -178,19 +197,20 @@ foreach ($dump in $dumps) {
                 CorruptionType = $p1
                 VA             = $va
                 Physical       = $phys
+                PhysicalInt    = Hex-ToInt64 $phys
             }
         }
     }
 }
 
-# ----- Report -----
 Write-Host "`n===== Fault-Context Candidate Physical Addresses ====="
 if ($results.Count -gt 0) {
     $results = $results | Sort-Object Physical, Dump
 
     $allCsv = Join-Path $OutputFolder "FaultContext-Candidates.csv"
-    $results | Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "All candidates saved to $allCsv"
+    $results | Select-Object Dump, CorruptionType, VA, Physical |
+        Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
+    Write-Host "All candidates (post module-range filtering) saved to $allCsv"
 
     $physGroups = $results | Group-Object Physical | Where-Object { $_.Count -gt 1 }
     $corrCsv = Join-Path $OutputFolder "PhysicalAddress-Correlations.csv"
@@ -209,21 +229,48 @@ if ($results.Count -gt 0) {
             }
         } | Sort-Object PhysicalAddress, DumpFile
         $corrRows | Export-Csv -Path $corrCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "Repeated physical addresses across dumps saved to $corrCsv"
-        Write-Host "`n$($physGroups.Count) physical address(es) recurred across multiple dumps:"
-        $physGroups | ForEach-Object {
-            Write-Host ("  {0}  (seen in {1} dumps)" -f $_.Name, $_.Count)
+        Write-Host "`nExact-match physical addresses across dumps saved to $corrCsv"
+        $physGroups | ForEach-Object { Write-Host ("  {0}  (seen in {1} dumps)" -f $_.Name, $_.Count) }
+    } else {
+        Write-Host "`nNo physical address recurred exactly across more than one dump."
+        "PhysicalAddress,DumpFile,CorruptionType,VirtualAddress,OccurrenceCount" | Out-File -FilePath $corrCsv -Encoding UTF8
+    }
+
+    $nearCsv = Join-Path $OutputFolder "PhysicalAddress-NearMatches.csv"
+    $sortedByPhys = $results | Sort-Object PhysicalInt
+    $nearRows = @()
+    for ($i = 0; $i -lt $sortedByPhys.Count - 1; $i++) {
+        for ($j = $i + 1; $j -lt $sortedByPhys.Count; $j++) {
+            $a = $sortedByPhys[$i]; $b = $sortedByPhys[$j]
+            $dist = $b.PhysicalInt - $a.PhysicalInt
+            if ($dist -gt $ProximityThresholdBytes) { break }
+            if ($a.Dump -eq $b.Dump) { continue }
+            if ($a.Physical -eq $b.Physical) { continue }
+            $nearRows += [PSCustomObject]@{
+                PhysicalA     = $a.Physical
+                DumpA         = $a.Dump
+                PhysicalB     = $b.Physical
+                DumpB         = $b.Dump
+                DistanceBytes = $dist
+            }
+        }
+    }
+    if ($nearRows.Count -gt 0) {
+        $nearRows | Sort-Object DistanceBytes | Export-Csv -Path $nearCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "`nNear-match candidates (within $ProximityThresholdBytes bytes, different dumps) saved to $nearCsv"
+        $nearRows | Sort-Object DistanceBytes | Select-Object -First 10 | ForEach-Object {
+            Write-Host ("  {0} ({1})  <->  {2} ({3})   distance 0x{4:X}" -f $_.PhysicalA, $_.DumpA, $_.PhysicalB, $_.DumpB, $_.DistanceBytes)
         }
     } else {
-        Write-Host "No physical address recurred across more than one dump."
-        "PhysicalAddress,DumpFile,CorruptionType,VirtualAddress,OccurrenceCount" | Out-File -FilePath $corrCsv -Encoding UTF8
+        Write-Host "`nNo near-match candidates within $ProximityThresholdBytes bytes across different dumps."
+        "PhysicalA,DumpA,PhysicalB,DumpB,DistanceBytes" | Out-File -FilePath $nearCsv -Encoding UTF8
     }
 
     $typeCsv = Join-Path $OutputFolder "CorruptionType-Summary.csv"
     $results | Select-Object Dump, CorruptionType -Unique |
         Sort-Object Dump |
         Export-Csv -Path $typeCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "Per-dump corruption type (BUGCHECK_P1) summary saved to $typeCsv"
+    Write-Host "`nPer-dump corruption type (BUGCHECK_P1) summary saved to $typeCsv"
 } else {
     Write-Host "No fault-context candidates found in any 0x139 dump."
 }

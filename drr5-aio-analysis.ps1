@@ -1,8 +1,7 @@
 <#
 .SYNOPSIS
-  Extracts kernel VAs from 0x139 crashes (faulting IP + stack),
-  translates them to physical addresses, and reports physical
-  addresses that appear in multiple dumps.
+  Physical address correlation using !pte (does not require DirBase).
+  Extracts kernel VAs from 0x139 crashes and translates via !pte.
 #>
 
 param(
@@ -41,12 +40,14 @@ function Is-KernelVA([string]$hex) {
     return $clean -match '^0xffff[89a-f][0-9a-f]{11}$'
 }
 
-# Helper: strip non-hex characters and prepend 0x
-function Clean-Hex([string]$raw) {
-    if (-not $raw) { return $null }
-    $hex = $raw -replace '[^0-9a-fA-F]'
-    if ($hex.Length -eq 0) { return $null }
-    return "0x$hex"
+# Convert VA + PFN to physical address
+function PFN-To-Physical([string]$pfnStr, [string]$va) {
+    try {
+        $pfn = [Convert]::ToInt64($pfnStr, 16)
+        $vaInt = [Convert]::ToInt64(($va -replace '^0x'), 16)
+        $phys = ($pfn * 0x1000) + ($vaInt -band 0xFFF)
+        return "0x{0:X}" -f $phys
+    } catch { return $null }
 }
 
 $dumps = Get-ChildItem -Path $DumpFolder -Filter *.dmp | Sort-Object Name
@@ -55,7 +56,7 @@ $allResults = @()
 foreach ($dump in $dumps) {
     $dumpPath = $dump.FullName
     $baseName = $dump.BaseName
-    Write-Host "Processing $($dump.Name) ..."
+    Write-Host "`n===== Processing $($dump.Name) =====" -ForegroundColor Yellow
 
     $analyzeLines = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v"
     $analyzeLines | Set-Content -Path (Join-Path $OutputFolder "$baseName-analyze.log")
@@ -64,108 +65,73 @@ foreach ($dump in $dumps) {
     $bugCheckCode = $null
     $codeLine = $analyzeLines | Where-Object { $_ -match 'BUGCHECK_CODE:\s+([0-9A-Fa-f]+)' }
     if ($codeLine) { $bugCheckCode = "0x$($Matches[1])" }
-    else {
-        $bcLine = $analyzeLines | Where-Object { $_ -match 'BugCheck\s+([0-9A-Fa-f]+),' }
-        if ($bcLine) { $bugCheckCode = "0x$($Matches[1])" }
-    }
-    Write-Host "  BugCheck: $bugCheckCode"
+    Write-Host "BugCheck: $bugCheckCode"
 
-    # Collect kernel VAs
-    $vasToTranslate = [System.Collections.ArrayList]@()
+    # Collect kernel VAs from stack (the faulting IP is included in stack, but we'll also grab explicit faulting IP)
+    $vas = [System.Collections.ArrayList]@()
 
-    # 1. Faulting IP – try FAULTING_IP: first, then TRAP_FRAME rip=
-    $faultIP = $null
-    $ipCtx = $analyzeLines | Select-String "FAULTING_IP:" -SimpleMatch -Context 0,1
-    if ($ipCtx -and $ipCtx.Context.PostContext[0] -match '^\s*([0-9a-fA-F`]+)') {
-        $faultIP = Clean-Hex $Matches[1]
-    }
-    if (-not $faultIP) {
-        foreach ($line in $analyzeLines) {
-            if ($line -match 'rip=([0-9a-fA-F`]+)') {
-                $faultIP = Clean-Hex $Matches[1]
-                break
-            }
-        }
-    }
-    if ($faultIP -and (Is-KernelVA $faultIP)) {
-        $vasToTranslate.Add($faultIP) | Out-Null
-        Write-Host "  FaultIP: $faultIP"
+    # Faulting IP from TRAP_FRAME
+    $ripMatch = $analyzeLines | Where-Object { $_ -match 'rip=([0-9a-fA-F`]+)' } | Select-Object -First 1
+    if ($ripMatch) {
+        $fip = "0x" + ($Matches[1] -replace '[^0-9a-fA-F]')
+        if (Is-KernelVA $fip) { $vas.Add($fip) | Out-Null; Write-Host "  FaultIP: $fip" }
     }
 
-    # 2. Stack return addresses (up to 5 unique kernel VAs)
+    # Stack lines
     $inStack = $false
-    $stackLines = @()
     foreach ($line in $analyzeLines) {
         if ($line -match '^STACK_TEXT:') { $inStack = $true; continue }
         if ($inStack -and $line -match '^[A-Z_]+:') { break }
-        if ($inStack) { $stackLines += $line }
-    }
-    $stackCount = 0
-    foreach ($sl in $stackLines) {
-        if ($stackCount -ge 5) { break }
-        $hexMatches = [regex]::Matches($sl, '([0-9a-fA-F`]{12,17})')
-        foreach ($m in $hexMatches) {
-            if ($stackCount -ge 5) { break }
-            $candidate = Clean-Hex $m.Value
-            if (Is-KernelVA $candidate -and ($vasToTranslate -notcontains $candidate)) {
-                $vasToTranslate.Add($candidate) | Out-Null
-                $stackCount++
-                Write-Host "  Stack addr: $candidate"
+        if ($inStack) {
+            # Extract all kernel VAs (take up to 5 unique)
+            $hexMatches = [regex]::Matches($line, '([0-9a-fA-F`]{12,17})')
+            foreach ($m in $hexMatches) {
+                $candidate = "0x" + ($m.Value -replace '[^0-9a-fA-F]')
+                if (Is-KernelVA $candidate -and $vas.Count -lt 6 -and $vas -notcontains $candidate) {
+                    $vas.Add($candidate) | Out-Null
+                    Write-Host "  Stack VA: $candidate"
+                }
             }
         }
     }
 
-    if ($vasToTranslate.Count -eq 0) {
-        Write-Warning "No kernel VAs to translate for $baseName"
-        $allResults += [PSCustomObject]@{ DumpFile=$dump.Name; BugCheckCode=$bugCheckCode; Translations=@() }
+    if ($vas.Count -eq 0) {
+        Write-Warning "No kernel VAs found."
         continue
     }
 
-    # Kernel page table base
-    $kernelDirBase = $null
-    $sysLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!process 0 0 System"
-    if (($sysLines -join "`n") -match 'DirBase:\s+([0-9a-fA-F`]+)') {
-        $kernelDirBase = Clean-Hex $Matches[1]
-    }
-    if (-not $kernelDirBase) {
-        $cr3Lines = Invoke-Cdb -DumpPath $dumpPath -Commands "r cr3"
-        if (($cr3Lines -join "`n") -match 'cr3=([0-9a-fA-F`]+)') {
-            $kernelDirBase = Clean-Hex $Matches[1]
-        }
-    }
-    if (-not $kernelDirBase) {
-        Write-Warning "No kernel page table base for $baseName"
-        continue
-    }
-    Write-Host "  DirBase: $kernelDirBase"
-
-    # Translate
+    # Translate each VA using !pte
     $translations = @()
-    foreach ($va in $vasToTranslate) {
-        $vtopLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!vtop $kernelDirBase $va"
-        $raw = $vtopLines -join "`n"
-        $physAddr = $null
-        if ($raw -match 'Physical Address:\s+([0-9a-fA-F`]+)') {
-            $physAddr = Clean-Hex $Matches[1]
-        } elseif ($raw -match 'contains\s+([0-9a-f]+)') {
-            $pfnVal = "0x$($Matches[1])"
-            $offset = [Convert]::ToInt64($va, 16) -band 0xFFF
-            $physAddr = "0x{0:X}" -f (([Convert]::ToInt64($pfnVal, 16) * 0x1000) + $offset)
+    $firstPte = $true
+    foreach ($va in $vas) {
+        $pteLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!pte $va"
+        $raw = $pteLines -join "`n"
+        if ($firstPte) {
+            Write-Host "  Raw !pte for $va :`n$raw"   # show one sample
+            $firstPte = $false
         }
-        $pfn = if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { "0x$($Matches[1])" } else { $null }
-        Write-Host "    $va -> Physical: $physAddr (PFN: $pfn)"
-        $translations += [PSCustomObject]@{ VirtualAddress=$va; PFN=$pfn; PhysicalAddress=$physAddr }
+
+        $pfn = $null
+        if ($raw -match '(?i)pfn\s+([0-9a-f]+)') {
+            $pfn = "0x$($Matches[1])"
+        } elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') {
+            $pfn = "0x$($Matches[1])"
+        }
+
+        $phys = if ($pfn) { PFN-To-Physical $pfn $va } else { $null }
+        Write-Host "    $va -> PFN: $pfn  Physical: $phys"
+        $translations += [PSCustomObject]@{ VirtualAddress=$va; PFN=$pfn; PhysicalAddress=$phys }
     }
 
     $allResults += [PSCustomObject]@{
-        DumpFile=$dump.Name
-        BugCheckCode=$bugCheckCode
-        Translations=$translations
+        DumpFile = $dump.Name
+        BugCheckCode = $bugCheckCode
+        Translations = $translations
     }
 }
 
 # Correlation
-Write-Host "`nPhysical addresses found:"
+Write-Host "`n===== All Physical Addresses ====="
 $physMap = @{}
 foreach ($r in $allResults) {
     foreach ($t in $r.Translations) {
@@ -173,29 +139,24 @@ foreach ($r in $allResults) {
             $key = $t.PhysicalAddress
             if (-not $physMap.ContainsKey($key)) { $physMap[$key] = @() }
             $physMap[$key] += [PSCustomObject]@{ Dump=$r.DumpFile; VA=$t.VirtualAddress }
+            Write-Host "$($r.DumpFile): $($t.VirtualAddress) -> $key"
         }
     }
 }
-foreach ($entry in $physMap.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending) {
-    Write-Host ("{0} ({1} occurrences):" -f $entry.Key, $entry.Value.Count)
-    foreach ($v in $entry.Value) { Write-Host "    $($v.Dump) -> VA $($v.VA)" }
-}
 
-# Export
-$corrCsv = Join-Path $OutputFolder "PhysicalAddress-Correlations.csv"
 $correlations = $physMap.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+$corrCsv = Join-Path $OutputFolder "PhysicalAddress-Correlations.csv"
 if ($correlations) {
     $rows = $correlations | ForEach-Object {
-        $addr = $_.Key
-        $_.Value | ForEach-Object {
+        $addr = $_.Key; $_.Value | ForEach-Object {
             [PSCustomObject]@{ PhysicalAddress=$addr; DumpFile=$_.Dump; VirtualAddress=$_.VA; OccurrenceCount=$_.Value.Count }
         }
     }
     $rows | Export-Csv -Path $corrCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "Correlation CSV saved to $corrCsv"
+    Write-Host "`nRepeated physical addresses saved to $corrCsv"
 } else {
-    Write-Host "No physical address appeared in more than one dump."
     "PhysicalAddress,DumpFile,VirtualAddress,OccurrenceCount" | Out-File -FilePath $corrCsv -Encoding UTF8
+    Write-Host "No physical address appeared in more than one dump."
 }
 
 Write-Host "Done."

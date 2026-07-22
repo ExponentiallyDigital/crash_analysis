@@ -1,4 +1,9 @@
 <#
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+THIS IS UNVERIFIED WIP CODE, it is broken/does not function correctly, retained only as examples of the approach used
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 .SYNOPSIS
     DDR5 forensic extractor
     Collects crash evidence (PTE, PFN, pool, WHEA, MCA, uptime, SMBIOS, BIOS/AGESA)
@@ -8,7 +13,6 @@
     powershell C:\Users\andrew\Documents\crash_analysis\ddr5_analyser-extract.ps1 -DumpFolder "C:\CrashDumps" -OutputFolder "C:\CrashDumps"
 
 #>
-
 
 param(
     [Parameter(Mandatory)][string]$DumpFolder,

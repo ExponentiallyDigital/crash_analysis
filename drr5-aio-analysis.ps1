@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Extracts potential corrupted‑memory addresses from 0x139 crashes
-  (timer objects only, excluding kernel‑code pages). No crash‑path output.
+  (timer objects only, excluding kernel‑code pages). Clean, minimal output.
 #>
 
 param(
@@ -52,20 +52,21 @@ function PFN-To-Physical([string]$pfnStr, [string]$va) {
 }
 
 $dumps = Get-ChildItem -Path $DumpFolder -Filter *.dmp | Sort-Object Name
-$allTimers = @()   # only timer objects (no stack code)
+$allTimers = @()   # only non‑code timer objects
 
 foreach ($dump in $dumps) {
     $dumpPath = $dump.FullName
     Write-Host "`n===== Processing $($dump.Name) =====" -ForegroundColor Yellow
 
-    # Quick analyze to confirm bugcheck
+    # Bugcheck
     $analyzeLines = Invoke-Cdb -DumpPath $dumpPath -Commands ".symfix; .reload /f; !analyze -v"
     $bugCheckCode = $null
     $codeLine = $analyzeLines | Where-Object { $_ -match 'BUGCHECK_CODE:\s+([0-9A-Fa-f]+)' }
     if ($codeLine) { $bugCheckCode = "0x$($Matches[1])" }
     Write-Host "BugCheck: $bugCheckCode"
 
-    # Extract timer objects
+    # Collect timer VAs
+    Write-Host "  Collecting timer objects..."
     $timerLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!timer"
     $timerVAs = @()
     foreach ($tl in $timerLines) {
@@ -78,10 +79,8 @@ foreach ($dump in $dumps) {
         }
     }
 
-    Write-Host "  Timer VAs to translate: $($timerVAs.Count)"
-
-    # Translate only timer VAs, skip PFN 0x200 (kernel code)
-    $countTranslated = 0
+    Write-Host "  Translating $($timerVAs.Count) timer VAs (excluding kernel code)..."
+    $goodCount = 0
     foreach ($va in $timerVAs) {
         $pteLines = Invoke-Cdb -DumpPath $dumpPath -Commands "!pte $va"
         $raw = $pteLines -join "`n"
@@ -89,24 +88,20 @@ foreach ($dump in $dumps) {
         if ($raw -match '(?i)pfn\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
         elseif ($raw -match '(?i)contains\s+([0-9a-f]+)') { $pfn = "0x$($Matches[1])" }
         if (-not $pfn) { continue }
-
-        # Exclude PFN 0x200 (kernel code / dispatcher data)
+        # Exclude PFN 0x200 (kernel code/dispatcher data)
         if ($pfn -eq "0x200") { continue }
 
         $phys = PFN-To-Physical $pfn $va
         if ($phys) {
             $allTimers += [PSCustomObject]@{ Dump = $dump.Name; VA = $va; Physical = $phys }
-            Write-Host "    $va -> $phys  (PFN $pfn)"
-            $countTranslated++
+            $goodCount++
         }
     }
-    if ($countTranslated -eq 0) {
-        Write-Host "    No non‑code timer objects found (all timer VAs in kernel code page)."
-    }
+    Write-Host "  Non‑code timer objects found: $goodCount"
 }
 
-# ----- Report only timer objects, sorted by physical -----
-Write-Host "`n===== Timer Objects (non‑code pages) ====="
+# ----- Final report (only non‑code timers) -----
+Write-Host "`n===== Timer Objects (Non‑Code Pages Only) ====="
 if ($allTimers.Count -gt 0) {
     $allTimers = $allTimers | Sort-Object Physical, Dump
     $allTimers | ForEach-Object {

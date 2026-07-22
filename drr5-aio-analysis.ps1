@@ -276,3 +276,59 @@ if ($results.Count -gt 0) {
 }
 
 Write-Host "`nDone."
+
+<# Claude analysis of results for FullDump_20260718_232727.dmp and FullDump_20260718_210229.dmp:
+
+I was wrong about 0x200180/0x200280. I said last time these were likely inside the kernel image (nt's data/rodata section) and that my code-page filter just failed to catch them by symbol name. This run captured 320 and 394 loaded modules via lm and checked full address ranges, not symbol names, so that filter is now a real test — and these addresses still weren't excluded. That means they're genuinely not backed by any loaded PE image. They're most likely something allocated very early in boot (a per-CPU control structure, HAL private data, an initial nonpaged pool reservation), the kind of thing the memory manager hands out from the same spot in the physical free-page list on every boot of identical hardware, independent of whether anything is actually wrong with your DRAM. So the recurrence there is still probably not evidence of your fault — just for a different reason than I said before, and I'd rather correct that than let it stand.
+
+The more interesting thing is in the near-match file, not the exact-match file. Look at these pairs:
+
+0x125A0E180 (dump 1) ↔ 0x125A0F180 (dump 2) — exactly 4096 bytes apart
+0x125A12080 (dump 1) ↔ 0x125A13080 (dump 2) — exactly 4096 bytes apart
+0x125A12180 ↔ 0x125A13180 — exactly 4096 bytes apart
+0x125A121A0 ↔ 0x125A131A0 — exactly 4096 bytes apart
+
+Four separate pairs, each landing exactly one page apart between the two dumps, all clustered within a ~20KB band of physical memory (0x125A0E000–0x125A13000). The virtual addresses behind these are completely different between dumps (0xffffe4002f051180 vs 0xffff9180c5900180 — different KASLR base entirely), yet the physical location tracks within one page every time. That's a much harder pattern to wave away as boot-time allocator determinism than the low-memory hits were, because it's tied to the actual fault-context registers and stack from the LIST_ENTRY corruption itself, not incidental boot structures.
+
+What I'd do next, rather than trust either address set on faith: in each dump, run !pool <VA> (not the physical address — the virtual one, e.g. !pool 0xffffe4002f051180) against a couple of the candidates in that 0x125A0E–0x125A13 cluster. That tells you the pool tag and allocation type backing that memory. If both dumps show the same pool tag/object type at that cluster, that's a real, checkable link between two independent crashes rather than a coincidence of address arithmetic. If you want, I can add a step to the script that runs !pool automatically against every candidate and logs the tag, so you get that context for free on the next run instead of doing it by hand.
+
+Two dumps is still thin for either conclusion. If you can get the third, corrupted dump running through this version, even partial data from it landing near that same 0x125A0E–0x125A13 band would turn this from "an interesting pair" into something worth taking seriously.
+
+---
+
+Screen displayed:
+
+===== Processing FullDump_20260718_210229.dmp =====
+  BugCheck: 0x139  P1(type): 3  TrapFrame: fffffe028e7d7040  ExceptionRecord: fffffe028e7d6f98
+  Loaded module ranges captured: 320
+  Candidate kernel VAs from fault context: 12
+
+===== Processing FullDump_20260718_232727.dmp =====
+  BugCheck: 0x139  P1(type): 3  TrapFrame: ffffe283907ee8b0  ExceptionRecord: ffffe283907ee808
+  Loaded module ranges captured: 394
+  Candidate kernel VAs from fault context: 12
+
+===== Fault-Context Candidate Physical Addresses =====
+All candidates (post module-range filtering) saved to .\FaultContext-Candidates.csv
+
+Exact-match physical addresses across dumps saved to .\PhysicalAddress-Correlations.csv
+  0x200180  (seen in 2 dumps)
+  0x200280  (seen in 2 dumps)
+
+Near-match candidates (within 65536 bytes, different dumps) saved to .\PhysicalAddress-NearMatches.csv
+  0x200180 (FullDump_20260718_232727.dmp)  <->  0x200280 (FullDump_20260718_210229.dmp)   distance 0x100
+  0x200180 (FullDump_20260718_210229.dmp)  <->  0x200280 (FullDump_20260718_232727.dmp)   distance 0x100
+  0x2009E0 (FullDump_20260718_210229.dmp)  <->  0x200BA0 (FullDump_20260718_232727.dmp)   distance 0x1C0
+  0x2008E8 (FullDump_20260718_210229.dmp)  <->  0x200BA0 (FullDump_20260718_232727.dmp)   distance 0x2B8
+  0x200280 (FullDump_20260718_232727.dmp)  <->  0x2008E8 (FullDump_20260718_210229.dmp)   distance 0x668
+  0x200280 (FullDump_20260718_232727.dmp)  <->  0x2009E0 (FullDump_20260718_210229.dmp)   distance 0x760
+  0x200180 (FullDump_20260718_232727.dmp)  <->  0x2008E8 (FullDump_20260718_210229.dmp)   distance 0x768
+  0x200180 (FullDump_20260718_232727.dmp)  <->  0x2009E0 (FullDump_20260718_210229.dmp)   distance 0x860
+  0x200280 (FullDump_20260718_210229.dmp)  <->  0x200BA0 (FullDump_20260718_232727.dmp)   distance 0x920
+  0x200180 (FullDump_20260718_210229.dmp)  <->  0x200BA0 (FullDump_20260718_232727.dmp)   distance 0xA20
+
+Per-dump corruption type (BUGCHECK_P1) summary saved to .\CorruptionType-Summary.csv
+
+Done.
+
+#>

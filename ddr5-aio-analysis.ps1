@@ -7,7 +7,7 @@
   dump files.
 
 .NOTES
-  v7 changes - adds 0x1a, which does not fit the other three codes' pattern:
+  Added 0x1a, which does not fit the other three codes' pattern:
 
   0x139/0x3b/0x7e all reach KeBugCheckEx via an exception, so !analyze -v
   always prints a TRAP_FRAME:/CONTEXT: register block and P2-P4 are always

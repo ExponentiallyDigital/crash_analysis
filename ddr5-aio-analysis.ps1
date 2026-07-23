@@ -1,31 +1,46 @@
+bash
+
+cat > /mnt/user-data/outputs/ddr5-faultcontext-analysis.ps1 << 'SCRIPTEOF'
 <#
 .SYNOPSIS
   Extracts candidate corrupted-memory addresses from KERNEL_SECURITY_CHECK_FAILURE
-  (0x139), SYSTEM_SERVICE_EXCEPTION (0x3b), and SYSTEM_THREAD_EXCEPTION_NOT_HANDLED
-  (0x7e) dumps, and correlates the resulting physical addresses - both exact
-  matches and near misses - across multiple dump files.
+  (0x139), SYSTEM_SERVICE_EXCEPTION (0x3b), SYSTEM_THREAD_EXCEPTION_NOT_HANDLED
+  (0x7e), and MEMORY_MANAGEMENT (0x1a) dumps, and correlates the resulting
+  physical addresses - both exact matches and near misses - across multiple
+  dump files.
 
 .NOTES
-  v6 changes - fixes two sources of false "candidates":
+  v7 changes - adds 0x1a, which does not fit the other three codes' pattern:
 
-  1) BUGCHECK_P1-P4 exclusion. The TRAP_FRAME:/CONTEXT: header line itself
-     contains the block's own address as literal text (eg
-     "CONTEXT:  ffff80818392d8f0 -- (.cxr 0xffff80818392d8f0)"), and for
-     0x139 the top STACK_TEXT frame re-prints the bugcheck's own arguments
-     as KeBugCheckEx's call parameters. Both leak P1-P4 back into the
-     candidate pool as if they were real register/stack values, when
-     they're just the debugger's own bookkeeping addresses. Every
-     candidate is now checked against P1-P4 (compared numerically, not by
-     string, since formatting/leading zeros vary) and dropped if it
-     matches.
+  0x139/0x3b/0x7e all reach KeBugCheckEx via an exception, so !analyze -v
+  always prints a TRAP_FRAME:/CONTEXT: register block and P2-P4 are always
+  debugger bookkeeping addresses (trap frame / exception record / context
+  record) - safe to exclude uniformly, as v6 does.
 
-  2) Hex-token regex tightened. The old pattern ([0-9a-fA-F`]{12,17}) could
-     match across two adjacent-but-unrelated hex fields with no separator,
-     producing bogus stitched-together values. Candidates are now only
-     accepted if they're exactly a 16-hex-digit token (optionally with a
-     single backtick after the 8th digit, matching cdb's own address
-     formatting), with a lookaround guard so a match can't be a fragment
-     of a longer adjacent run of hex/backtick characters.
+  0x1a is raised directly by the memory manager when it detects corruption,
+  with no exception involved, so there is usually no TRAP_FRAME:/CONTEXT:
+  block at all. Worse, per Microsoft's own documentation "any other values
+  for parameter 1 must be individually examined" - Arg1 selects a subtype,
+  and Arg2-Arg4's meaning is entirely different per subtype (an address in
+  some cases, a count in others). Blanket-excluding P2-P4 the way v6 does
+  for the other codes would be wrong here, since for some subtypes Arg2 IS
+  the payload, not bookkeeping.
+
+  This script only special-cases the one subtype in the request (Arg1 =
+  0x41790, "a page table page has been corrupted"), where Arg2 is
+  documented as the address of the PFN-database entry for the corrupted
+  page table page (64-bit OS semantics only - this pipeline assumes x64
+  throughout anyway). That address is added as a real candidate rather
+  than excluded, and is tagged with a Note explaining an important caveat:
+  its !pte-derived physical address is the PFN database entry's own
+  backing page, not the corrupted page table page itself - useful as a
+  correlation fingerprint, not as the fault location directly.
+
+  For any other 0x1a Arg1 value, Arg2-Arg4 are NOT auto-added as
+  candidates, since their meaning is unverified for that subtype. A
+  console warning names the subtype and says it needs manual checking
+  against Microsoft's bugcheck reference before extending this script to
+  cover it.
 #>
 
 param(
@@ -38,7 +53,15 @@ param(
     [int64]$ProximityThresholdBytes = 0x10000
 )
 
-$SupportedBugChecks = @("0x139", "0x3b", "0x7e")
+$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a")
+$ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e")
+
+# Known, verified 0x1a Arg1 subtypes. Key is the lowercased, zero-stripped
+# hex value of Arg1. Extend only after checking Microsoft's bugcheck
+# reference for the subtype's actual Arg2-Arg4 semantics.
+$KnownMemoryManagementSubtypes = @{
+    "41790" = "A page table page has been corrupted. Arg2 is the address of the PFN-database entry for the corrupted page table page (64-bit OS)."
+}
 
 # A hex token is exactly 16 digits, optionally split by one backtick after
 # the 8th digit (cdb's own formatting), and must not be adjacent to more
@@ -135,11 +158,19 @@ function Hex-ToInt64([string]$hex) {
     return [Convert]::ToInt64($clean, 16)
 }
 
-# Same as Hex-ToInt64 but returns $null instead of throwing, for values
-# that might be empty/malformed (eg an argument that wasn't present).
+# Same as Hex-ToInt64 but returns $null instead of throwing.
 function Try-HexToInt64([string]$hex) {
     if (Is-ZeroOrEmpty $hex) { return $null }
     try { return Hex-ToInt64 $hex } catch { return $null }
+}
+
+# Lowercased, zero-stripped hex string - used as a lookup key for the
+# 0x1a subtype table, since BUGCHECK_P1 is printed without padding.
+function Normalize-HexForLookup([string]$hex) {
+    if (-not $hex) { return "" }
+    $clean = ((Get-HexClean $hex) -replace '^0x').ToLower().TrimStart('0')
+    if ($clean -eq "") { return "0" }
+    return $clean
 }
 
 function Get-PfnFromPte([string[]]$pteLines) {
@@ -197,10 +228,7 @@ function Get-Section([string[]]$lines, [string]$startPattern, [string[]]$stopPat
     return $capture
 }
 
-# Broad scan using the strict 16-digit hex token pattern. Fine for
-# TRAP_FRAME/CONTEXT ("rax=<hex>" pairs) and STACK_TEXT (return
-# addresses/args) - every properly-bounded hex token in those blocks is a
-# real value, not a mix of "memory location" and "value stored there".
+# Broad scan using the strict 16-digit hex token pattern.
 function Get-CandidatesFromLines([string[]]$lines, [string]$tokenPattern) {
     $found = @()
     foreach ($line in $lines) {
@@ -261,12 +289,17 @@ foreach ($dump in $dumps) {
         continue
     }
 
-    # Values to exclude from the candidate pool: these are the debugger's
-    # own bookkeeping addresses (trap frame / exception record / context
-    # record locations, or the bugcheck's own P1-P4 arguments), not real
-    # register/stack contents. Compared numerically since formatting and
-    # leading zeros vary between where they're printed.
-    $excludedInts = @($p1, $p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+    # Bookkeeping-address exclusion is code-dependent. For 0x139/0x3b/0x7e,
+    # P2-P4 are always debugger self-reference addresses (trap frame /
+    # exception record / context record) and are safe to exclude uniformly.
+    # For 0x1a, Arg2-P4's meaning depends entirely on the Arg1 subtype - see
+    # NOTES above - so only P1 (the subtype code itself) is excluded here;
+    # anything else is handled explicitly per known subtype below.
+    if ($ExceptionBasedBugChecks -contains $bugCheckCode) {
+        $excludedInts = @($p1, $p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+    } else {
+        $excludedInts = @($p1) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+    }
 
     $lmResult = Invoke-Cdb -DumpPath $dumpPath -Commands "lm"
     if ($lmResult.TimedOut) {
@@ -275,17 +308,20 @@ foreach ($dump in $dumps) {
     $moduleRanges = Get-ModuleRangesFromLines $lmResult.Lines
     Write-Host "  Loaded module ranges captured: $($moduleRanges.Count)"
 
-    # Register block header differs by code: 0x139 uses .trap internally and
-    # prints "TRAP_FRAME:"; 0x3b/0x7e use .cxr internally and print
-    # "CONTEXT:". Same reg=value line format either way. Note the header
-    # line itself embeds its own address as text (see NOTES above) - this
-    # is exactly what the P1-P4 exclusion below is for.
+    # Register block header: "TRAP_FRAME:" for 0x139 (.trap), "CONTEXT:" for
+    # 0x3b/0x7e (.cxr). 0x1a is usually raised directly by the memory
+    # manager with no exception, so this block is often absent for it -
+    # that's expected, not an error.
     $regBlockLines = Get-Section -lines $analyzeLines -startPattern '^(TRAP_FRAME|CONTEXT):' -stopPatterns @('^Resetting default scope', '^EXCEPTION_RECORD:', '^BLACKBOX') -maxLines 12
     $stackTextLines = Get-Section -lines $analyzeLines -startPattern '^STACK_TEXT:' -stopPatterns @('^STACK_COMMAND:') -maxLines 40
 
     if ($regBlockLines.Count -eq 0) {
-        Write-Host "  No TRAP_FRAME/CONTEXT register block found in !analyze -v output - skipping this dump." -ForegroundColor DarkYellow
-        continue
+        if ($bugCheckCode -eq "0x1a") {
+            Write-Host "  No TRAP_FRAME/CONTEXT block (expected for most 0x1a subtypes, which aren't exception-based). Continuing with STACK_TEXT and subtype-specific arguments." -ForegroundColor DarkGray
+        } else {
+            Write-Host "  No TRAP_FRAME/CONTEXT register block found in !analyze -v output - skipping this dump." -ForegroundColor DarkYellow
+            continue
+        }
     }
 
     $rspValue = $null
@@ -295,23 +331,42 @@ foreach ($dump in $dumps) {
 
     $candidateVAs = Get-CandidatesFromLines ($regBlockLines + $stackTextLines) $HexTokenPattern
 
-    # Best-effort deeper stack read. dps just reads memory at an address -
-    # it doesn't need "current" execution context re-established, so it's
-    # safe even where that context is otherwise broken.
+    # Best-effort deeper stack read (only fires if a register block gave us
+    # an rsp - won't apply to most 0x1a dumps, which is fine).
     if ($rspValue -and -not (Is-ZeroOrEmpty $rspValue)) {
         $dpsResult = Invoke-Cdb -DumpPath $dumpPath -Commands "dps 0x$rspValue L16" -TimeoutSeconds 30
         if ($dpsResult.TimedOut) {
-            Write-Host "  Note: supplementary stack dps timed out - continuing with TRAP_FRAME/CONTEXT + STACK_TEXT candidates only." -ForegroundColor DarkYellow
+            Write-Host "  Note: supplementary stack dps timed out - continuing without it." -ForegroundColor DarkYellow
         }
         $extra = Get-CandidatesFromDpsLines $dpsResult.Lines $HexTokenCore
         foreach ($c in $extra) { if ($candidateVAs -notcontains $c) { $candidateVAs += $c } }
+    }
+
+    # Per-candidate notes, for cases where a candidate's meaning needs
+    # explanation beyond "found in a register/stack slot".
+    $candidateNotes = @{}
+
+    if ($bugCheckCode -eq "0x1a") {
+        $subtype = Normalize-HexForLookup $p1
+        if ($KnownMemoryManagementSubtypes.ContainsKey($subtype)) {
+            Write-Host "  0x1a subtype $p1 recognized: $($KnownMemoryManagementSubtypes[$subtype])" -ForegroundColor Cyan
+            if ($subtype -eq "41790") {
+                $p2Candidate = "0x" + (Get-HexClean $p2)
+                if ((Is-KernelVA $p2Candidate) -and ($candidateVAs -notcontains $p2Candidate)) {
+                    $candidateVAs += $p2Candidate
+                    $candidateNotes[$p2Candidate] = "Arg2 for 0x1a subtype 0x41790: address of the PFN-database entry for the corrupted page table page. The physical address below is that PFN entry's own backing page, not the corrupted page table page itself - useful for correlation, not as the fault location directly."
+                }
+            }
+        } else {
+            Write-Host "  0x1a subtype $p1 is not a recognized/verified subtype in this script. Per Microsoft's bugcheck reference, Arg2-Arg4 meaning differs per subtype and must be checked manually before treating them as addresses - they are NOT auto-added as candidates here." -ForegroundColor DarkYellow
+        }
     }
 
     $preExclusionCount = $candidateVAs.Count
     $candidateVAs = $candidateVAs | Where-Object { $excludedInts -notcontains (Hex-ToInt64 $_) }
     $excludedCount = $preExclusionCount - $candidateVAs.Count
     if ($excludedCount -gt 0) {
-        Write-Host "  Excluded $excludedCount candidate(s) matching BUGCHECK_P1-P4 (debugger bookkeeping addresses, not real data)." -ForegroundColor DarkGray
+        Write-Host "  Excluded $excludedCount candidate(s) matching known bookkeeping values." -ForegroundColor DarkGray
     }
 
     Write-Host "  Candidate kernel VAs from fault context: $($candidateVAs.Count)"
@@ -330,6 +385,8 @@ foreach ($dump in $dumps) {
 
         $phys = PFN-To-Physical $pfn $va
         if ($phys) {
+            $note = ""
+            if ($candidateNotes.ContainsKey($va)) { $note = $candidateNotes[$va] }
             $results += [PSCustomObject]@{
                 Dump           = $dump.Name
                 BugCheckCode   = $bugCheckCode
@@ -337,6 +394,7 @@ foreach ($dump in $dumps) {
                 VA             = $va
                 Physical       = $phys
                 PhysicalInt    = Hex-ToInt64 $phys
+                Note           = $note
             }
         }
     }
@@ -347,9 +405,9 @@ if ($results.Count -gt 0) {
     $results = $results | Sort-Object Physical, Dump
 
     $allCsv = Join-Path $OutputFolder "FaultContext-Candidates.csv"
-    $results | Select-Object Dump, BugCheckCode, CorruptionType, VA, Physical |
+    $results | Select-Object Dump, BugCheckCode, CorruptionType, VA, Physical, Note |
         Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "All candidates (post module-range + P1-P4 filtering) saved to $allCsv"
+    Write-Host "All candidates (post module-range + bookkeeping filtering) saved to $allCsv"
 
     # ----- Exact matches, split by whether all dumps in the group share a bugcheck code -----
     $physGroups = $results | Group-Object Physical | Where-Object { $_.Count -gt 1 }
@@ -369,6 +427,7 @@ if ($results.Count -gt 0) {
                     CorruptionType  = $_.CorruptionType
                     VirtualAddress  = $_.VA
                     OccurrenceCount = $occ
+                    Note            = $_.Note
                 }
             }
         } | Sort-Object @{Expression = { if ($_.MatchType -eq "CrossCode") { 0 } else { 1 } }}, PhysicalAddress, DumpFile
@@ -391,7 +450,7 @@ if ($results.Count -gt 0) {
         }
     } else {
         Write-Host "`nNo physical address recurred exactly across more than one dump."
-        "PhysicalAddress,MatchType,DumpFile,BugCheckCode,CorruptionType,VirtualAddress,OccurrenceCount" | Out-File -FilePath $corrCsv -Encoding UTF8
+        "PhysicalAddress,MatchType,DumpFile,BugCheckCode,CorruptionType,VirtualAddress,OccurrenceCount,Note" | Out-File -FilePath $corrCsv -Encoding UTF8
     }
 
     # ----- Near matches, tagged per-pair as SameCode/CrossCode -----
@@ -453,3 +512,9 @@ if ($results.Count -gt 0) {
 }
 
 Write-Host "`nDone."
+SCRIPTEOF
+echo "written"
+Output
+
+written
+Done

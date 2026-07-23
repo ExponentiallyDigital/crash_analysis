@@ -1,6 +1,3 @@
-bash
-
-cat > /mnt/user-data/outputs/ddr5-faultcontext-analysis.ps1 << 'SCRIPTEOF'
 <#
 .SYNOPSIS
   Extracts candidate corrupted-memory addresses from KERNEL_SECURITY_CHECK_FAILURE
@@ -512,9 +509,3 @@ if ($results.Count -gt 0) {
 }
 
 Write-Host "`nDone."
-SCRIPTEOF
-echo "written"
-Output
-
-written
-Done

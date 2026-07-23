@@ -1,6 +1,22 @@
-# ddr5-aio-analysis.readme.md
+# ddr5-aio-analysis.md
 
-[[_TOC_]]
+- [ddr5-aio-analysis.md](#ddr5-aio-analysismd)
+  - [Set up your environment](#set-up-your-environment)
+    - [Prevent Windows from overwriting the last crash dump](#prevent-windows-from-overwriting-the-last-crash-dump)
+      - [1. PowerShell script: `SetDumpPath.ps1`](#1-powershell-script-setdumppathps1)
+      - [2. Backup your default crash settings (for reference)](#2-backup-your-default-crash-settings-for-reference)
+      - [3. Create scheduled task (`CrashDumpPathRotation`)](#3-create-scheduled-task-crashdumppathrotation)
+      - [4. Test crash dump creation](#4-test-crash-dump-creation)
+  - [Analysing dump files for faulty DDR5 RAM](#analysing-dump-files-for-faulty-ddr5-ram)
+    - [Key questions](#key-questions)
+    - [What we can't ascertain](#what-we-cant-ascertain)
+    - [Caveats: what dump analysis cannot rule out](#caveats-what-dump-analysis-cannot-rule-out)
+    - [Memory interleaving](#memory-interleaving)
+      - [Where to find it in the BIOS](#where-to-find-it-in-the-bios)
+        - [On AMD systems](#on-amd-systems)
+        - [On Intel systems](#on-intel-systems)
+        - [Legacy / alternative terms](#legacy--alternative-terms)
+  - [DDR5 corrupted memory crash analysis and reporting](#ddr5-corrupted-memory-crash-analysis-and-reporting)
 
 ## Set up your environment
 
@@ -111,11 +127,11 @@ Reboot and test by holding **Right Ctrl** then tapping **Scroll Lock** twice.
 
 ---
 
-### Analysing dump files for faulty DDR5 RAM
+## Analysing dump files for faulty DDR5 RAM
 
 We want to find, if possible, commonalities between the crash dumps. We know that the Windows stop code changes depending on which Windows structure is corrupted, so short of physical analysis (with FIB, e-beam, or decapping and visual inspection, to ascertain if the defect is in the refresh counter, the row decoder, or the bank multiplexer) we can look for this in the dump files:
 
-#### Key questions
+### Key questions
 
 - Is the corruption **physical-address-dependent**?
 - Does corruption occur across boots at the **same physical address** suggesting a stuck data bit or weak cell(s)?
@@ -126,7 +142,7 @@ We know from the 59 tests I ran against my X870E-E system with this RAM
 
 that for my fault, the trigger is refresh-count-invariant, meaning that it always happens after the same total number of refresh commands, no matter how the conditions are changed with 'bank refresh mode' or tREFI.
 
-#### What we can't ascertain
+### What we can't ascertain
 
 | Mechanism                 | Fault Description                                                                                             | What you'd see in dumps                                                   |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -136,7 +152,7 @@ that for my fault, the trigger is refresh-count-invariant, meaning that it alway
 | Word-line stuck-on        | A word-line remains activated, corrupting adjacent rows via charge sharing                                    | Adjacent-row pattern, but not identical data                              |
 | On-die ECC scrubber fault | DDR5's ECC scrubber activates at refresh time and writes wrong data                                           | Random pattern, no address correlation                                    |
 
-#### Caveats – what dump analysis cannot rule out
+### Caveats: what dump analysis cannot rule out
 
 **1. Stuck counter bit (same physical address)**
 
@@ -176,11 +192,41 @@ Might miss if:
 
 For this to work, the "wrong row" must contain data that was valid at some point and is now sitting in a different row. If the DRAM refreshes row X into row Y, but then the CPU writes new data to row Y, the copy evidence is destroyed.
 
+### Memory interleaving
+
+Ideally, test with only one stick in your system. If you use more than one, you'll need to disable memory interleaving.
+
+Memory interleaving is known by several names across different BIOS systems and motherboards. In a BIOS/UEFI setup, it is typically named based on the specific **hardware layer** being interleaved.
+
+#### Where to find it in the BIOS
+
+##### On AMD systems
+
+Look under the **AMD CBS** (Core Complex System) menu:
+
+> `Advanced` $\rightarrow$ `AMD CBS` $\rightarrow$ `DRAM Controller Configuration` or `Data Fabric Options`
+
+- Common options: **Memory Interleaving**, **Memory Interleaving Size** (e.g., 256B, 512B, 1KB, Auto), or **Channel Interleaving Hash**.
+
+##### On Intel systems
+
+Look under the primary memory or processor configuration settings:
+
+> `Advanced` $\rightarrow$ `System Agent (SA) Configuration` $\rightarrow$ `Memory Configuration`
+
+- Common options: **Channel Interleaving**, **IMC Interleaving**, or **Sub-NUMA Clustering (SNC)**.
+
+##### Legacy / alternative terms
+
+- **Ganged / Unganged Mode** _(Older AMD platforms like Phenom II/FX)_:
+- **Unganged** = Interleaved (two independent 64-bit channels; better performance).
+- **Ganged** = Non-interleaved (one combined 128-bit channel).
+
 ---
 
 Taking all of the above into consideration:
 
-### DDR5 corrupted memory crash analysis and reporting
+## DDR5 corrupted memory crash analysis and reporting
 
 | file                                                                                                            | description                                                                                                                                                                                                                                                                                                                                                                    |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -192,5 +238,11 @@ Sample output
   <img src="ddr5-aio-analysis.ss1.png" alt="Main menu" width="100%">
   <figcaption>Console output</figcaption>
 </figure>
+
+[placeholder for created CSVs]
+
+[placeholder for an example system log]
+
+[placeholder for an example system journal]
 
 ---

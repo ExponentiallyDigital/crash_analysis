@@ -93,7 +93,7 @@ foreach ($lbl in $labels.Values) { $form.Controls.Add($lbl) }
 # !!!!!!!!!!!!! 
 # !!!!!!!!!!!!! edit below line:
 # !!!!!!!!!!!!! 
-$Offset = New-TimeSpan -Hours 1 -Minutes 58
+$Offset = New-TimeSpan -Hours 5 -Minutes 56
 
 # =============================================================================
 # 6. UPDATE LOGIC
@@ -246,7 +246,7 @@ function Update-Dashboard {
     # !!!!!!!!!!!!! 
     # !!!!!!!!!!!!! edit below line:
     # !!!!!!!!!!!!! 
-    $labels.TargetTime.Text = "Boot +1h 58m:    $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    $labels.TargetTime.Text = "Boot 51h 56m:    $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
     # Display remaining hours and minutes.
     $labels.Remaining.Text  = "Remaining:       $($remaining.Hours)h $($remaining.Minutes)m"

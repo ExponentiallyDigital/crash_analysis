@@ -6,33 +6,26 @@
   matches and near misses - across multiple dump files.
 
 .NOTES
-  v5 changes - extends coverage beyond 0x139:
+  v6 changes - fixes two sources of false "candidates":
 
-  Register values are located by searching !analyze -v's own output for
-  whichever register-block header it printed - "TRAP_FRAME:" (0x139, which
-  uses .trap internally) or "CONTEXT:" (0x3b/0x7e, which use .cxr
-  internally) - rather than by interpreting which BUGCHECK_P-argument means
-  what for each bugcheck code. All three codes put that block in the same
-  "regname=hexvalue" format, so one parser handles all of them. This also
-  means the faulting instruction address (rip) rides through the same
-  candidate pool as every other register - no special handling for "which
-  driver was executing", since we're only correlating physical addresses,
-  not attributing blame to a module. The existing module-range filter
-  already excludes it in the (typical) case where it points into a loaded
-  driver's code section.
+  1) BUGCHECK_P1-P4 exclusion. The TRAP_FRAME:/CONTEXT: header line itself
+     contains the block's own address as literal text (eg
+     "CONTEXT:  ffff80818392d8f0 -- (.cxr 0xffff80818392d8f0)"), and for
+     0x139 the top STACK_TEXT frame re-prints the bugcheck's own arguments
+     as KeBugCheckEx's call parameters. Both leak P1-P4 back into the
+     candidate pool as if they were real register/stack values, when
+     they're just the debugger's own bookkeeping addresses. Every
+     candidate is now checked against P1-P4 (compared numerically, not by
+     string, since formatting/leading zeros vary) and dropped if it
+     matches.
 
-  BUGCHECK_P1 means something different per code (a corruption-kind enum
-  for 0x139, an NTSTATUS exception code for 0x3b/0x7e), so every row and
-  summary now also carries BugCheckCode alongside it, rather than treating
-  P1 as one universal column.
-
-  Correlation output is split into SameCode and CrossCode matches. A
-  physical address recurring across two 0x139 dumps has a plausible
-  alternate explanation (same corruption path, similar allocator
-  behaviour). A physical address recurring between a 0x139 dump and a
-  0x3b/0x7e dump does not - those are structurally unrelated failure
-  modes, so a shared physical location between them is considerably
-  stronger evidence and is called out separately.
+  2) Hex-token regex tightened. The old pattern ([0-9a-fA-F`]{12,17}) could
+     match across two adjacent-but-unrelated hex fields with no separator,
+     producing bogus stitched-together values. Candidates are now only
+     accepted if they're exactly a 16-hex-digit token (optionally with a
+     single backtick after the 8th digit, matching cdb's own address
+     formatting), with a lookaround guard so a match can't be a fragment
+     of a longer adjacent run of hex/backtick characters.
 #>
 
 param(
@@ -46,6 +39,12 @@ param(
 )
 
 $SupportedBugChecks = @("0x139", "0x3b", "0x7e")
+
+# A hex token is exactly 16 digits, optionally split by one backtick after
+# the 8th digit (cdb's own formatting), and must not be adjacent to more
+# hex/backtick characters - prevents matching a fragment of a longer run.
+$HexTokenCore = '[0-9a-fA-F]{8}`[0-9a-fA-F]{8}|[0-9a-fA-F]{16}'
+$HexTokenPattern = "(?<![0-9a-fA-F``])($HexTokenCore)(?![0-9a-fA-F``])"
 
 if (-not (Test-Path $OutputFolder)) {
     New-Item -ItemType Directory -Path $OutputFolder | Out-Null
@@ -136,6 +135,13 @@ function Hex-ToInt64([string]$hex) {
     return [Convert]::ToInt64($clean, 16)
 }
 
+# Same as Hex-ToInt64 but returns $null instead of throwing, for values
+# that might be empty/malformed (eg an argument that wasn't present).
+function Try-HexToInt64([string]$hex) {
+    if (Is-ZeroOrEmpty $hex) { return $null }
+    try { return Hex-ToInt64 $hex } catch { return $null }
+}
+
 function Get-PfnFromPte([string[]]$pteLines) {
     $raw = $pteLines -join "`n"
     if ($raw -match '(?im)^\s*pfn\s+([0-9a-f]+)') { return $Matches[1] }
@@ -191,16 +197,16 @@ function Get-Section([string[]]$lines, [string]$startPattern, [string[]]$stopPat
     return $capture
 }
 
-# Broad scan: every kernel-space hex token on each line is a candidate.
-# Fine for TRAP_FRAME/CONTEXT ("rax=<hex>" pairs) and STACK_TEXT (return
-# addresses/args) - every hex token in those blocks is a real value, not a
-# mix of "memory location" and "value stored there".
-function Get-CandidatesFromLines([string[]]$lines) {
+# Broad scan using the strict 16-digit hex token pattern. Fine for
+# TRAP_FRAME/CONTEXT ("rax=<hex>" pairs) and STACK_TEXT (return
+# addresses/args) - every properly-bounded hex token in those blocks is a
+# real value, not a mix of "memory location" and "value stored there".
+function Get-CandidatesFromLines([string[]]$lines, [string]$tokenPattern) {
     $found = @()
     foreach ($line in $lines) {
-        $hexMatches = [regex]::Matches($line, '([0-9a-fA-F`]{12,17})')
+        $hexMatches = [regex]::Matches($line, $tokenPattern)
         foreach ($m in $hexMatches) {
-            $candidate = "0x" + (Get-HexClean $m.Value)
+            $candidate = "0x" + (Get-HexClean $m.Groups[1].Value)
             if ((Is-KernelVA $candidate) -and ($found -notcontains $candidate)) { $found += $candidate }
         }
     }
@@ -209,10 +215,11 @@ function Get-CandidatesFromLines([string[]]$lines) {
 
 # Column-aware: dps prints "<stack slot address>  <value>[ symbol]" per
 # line. Only the VALUE (2nd column) is a meaningful candidate.
-function Get-CandidatesFromDpsLines([string[]]$lines) {
+function Get-CandidatesFromDpsLines([string[]]$lines, [string]$tokenCore) {
     $found = @()
+    $linePattern = "^\s*(?:$tokenCore)\s+($tokenCore)(?:\s|$)"
     foreach ($line in $lines) {
-        if ($line -match '^\s*[0-9a-fA-F`]{8,17}\s+([0-9a-fA-F`]{8,17})') {
+        if ($line -match $linePattern) {
             $candidate = "0x" + (Get-HexClean $Matches[1])
             if ((Is-KernelVA $candidate) -and ($found -notcontains $candidate)) { $found += $candidate }
         }
@@ -254,6 +261,13 @@ foreach ($dump in $dumps) {
         continue
     }
 
+    # Values to exclude from the candidate pool: these are the debugger's
+    # own bookkeeping addresses (trap frame / exception record / context
+    # record locations, or the bugcheck's own P1-P4 arguments), not real
+    # register/stack contents. Compared numerically since formatting and
+    # leading zeros vary between where they're printed.
+    $excludedInts = @($p1, $p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+
     $lmResult = Invoke-Cdb -DumpPath $dumpPath -Commands "lm"
     if ($lmResult.TimedOut) {
         Write-Host "  Note: lm timed out - module-range filtering will use whatever partial list was captured." -ForegroundColor DarkYellow
@@ -263,7 +277,9 @@ foreach ($dump in $dumps) {
 
     # Register block header differs by code: 0x139 uses .trap internally and
     # prints "TRAP_FRAME:"; 0x3b/0x7e use .cxr internally and print
-    # "CONTEXT:". Same reg=value line format either way.
+    # "CONTEXT:". Same reg=value line format either way. Note the header
+    # line itself embeds its own address as text (see NOTES above) - this
+    # is exactly what the P1-P4 exclusion below is for.
     $regBlockLines = Get-Section -lines $analyzeLines -startPattern '^(TRAP_FRAME|CONTEXT):' -stopPatterns @('^Resetting default scope', '^EXCEPTION_RECORD:', '^BLACKBOX') -maxLines 12
     $stackTextLines = Get-Section -lines $analyzeLines -startPattern '^STACK_TEXT:' -stopPatterns @('^STACK_COMMAND:') -maxLines 40
 
@@ -277,7 +293,7 @@ foreach ($dump in $dumps) {
         if ($l -match 'rsp=([0-9a-f]+)') { $rspValue = $Matches[1]; break }
     }
 
-    $candidateVAs = Get-CandidatesFromLines ($regBlockLines + $stackTextLines)
+    $candidateVAs = Get-CandidatesFromLines ($regBlockLines + $stackTextLines) $HexTokenPattern
 
     # Best-effort deeper stack read. dps just reads memory at an address -
     # it doesn't need "current" execution context re-established, so it's
@@ -287,8 +303,15 @@ foreach ($dump in $dumps) {
         if ($dpsResult.TimedOut) {
             Write-Host "  Note: supplementary stack dps timed out - continuing with TRAP_FRAME/CONTEXT + STACK_TEXT candidates only." -ForegroundColor DarkYellow
         }
-        $extra = Get-CandidatesFromDpsLines $dpsResult.Lines
+        $extra = Get-CandidatesFromDpsLines $dpsResult.Lines $HexTokenCore
         foreach ($c in $extra) { if ($candidateVAs -notcontains $c) { $candidateVAs += $c } }
+    }
+
+    $preExclusionCount = $candidateVAs.Count
+    $candidateVAs = $candidateVAs | Where-Object { $excludedInts -notcontains (Hex-ToInt64 $_) }
+    $excludedCount = $preExclusionCount - $candidateVAs.Count
+    if ($excludedCount -gt 0) {
+        Write-Host "  Excluded $excludedCount candidate(s) matching BUGCHECK_P1-P4 (debugger bookkeeping addresses, not real data)." -ForegroundColor DarkGray
     }
 
     Write-Host "  Candidate kernel VAs from fault context: $($candidateVAs.Count)"
@@ -326,7 +349,7 @@ if ($results.Count -gt 0) {
     $allCsv = Join-Path $OutputFolder "FaultContext-Candidates.csv"
     $results | Select-Object Dump, BugCheckCode, CorruptionType, VA, Physical |
         Export-Csv -Path $allCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "All candidates (post module-range filtering) saved to $allCsv"
+    Write-Host "All candidates (post module-range + P1-P4 filtering) saved to $allCsv"
 
     # ----- Exact matches, split by whether all dumps in the group share a bugcheck code -----
     $physGroups = $results | Group-Object Physical | Where-Object { $_.Count -gt 1 }

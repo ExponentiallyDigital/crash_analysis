@@ -1,11 +1,21 @@
 <#
 .SYNOPSIS
-  Extracts candidate corrupted-memory addresses from KERNEL_SECURITY_CHECK_FAILURE
-  (0x139), SYSTEM_SERVICE_EXCEPTION (0x3b), SYSTEM_THREAD_EXCEPTION_NOT_HANDLED
-  (0x7e), MEMORY_MANAGEMENT (0x1a), and CRITICAL_PROCESS_DIED (ef) dumps, and
+  Extracts candidate corrupted-memory addresses from these dump types and
   correlates the resulting physical addresses - both exact matches and near
-  misses - across multiple dump files.
+  misses - across multiple dump files:
 
+   KERNEL_SECURITY_CHECK_FAILURE (0x139)
+   SYSTEM_SERVICE_EXCEPTION (0x3b)
+   SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e)
+   MEMORY_MANAGEMENT (0x1a)
+   CRITICAL_PROCESS_DIED (ef)
+
+  Does not yet cater for:
+
+   IRQL_NOT_LESS_OR_EQUAL (a) - 10 historical incidences
+   SECURE_KERNEL_ERROR (18b) - 5 historical incidences
+
+  
 .NOTES
 v0.1.7 Added CRITICAL_PROCESS_DIED (ef) analysis (same processing as 0x1a)
 v0.1.6 Added 0x1a, which does not fit the other three codes' pattern:

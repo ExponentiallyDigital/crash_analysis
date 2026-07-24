@@ -17,6 +17,7 @@
 
   
 .NOTES
+v0.1.8 Fix ($ExceptionBasedBugChecks -contains $bugCheckCode) for 0xef
 v0.1.7 Added CRITICAL_PROCESS_DIED (ef) analysis (same processing as 0x1a)
 v0.1.6 Added 0x1a, which does not fit the other three codes' pattern:
 
@@ -305,8 +306,10 @@ foreach ($dump in $dumps) {
     # anything else is handled explicitly per known subtype below.
     if ($ExceptionBasedBugChecks -contains $bugCheckCode) {
         $excludedInts = @($p1, $p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
-    } else {
+    } elseif ($bugCheckCode -eq "0x1a") {
         $excludedInts = @($p1) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+    } else {
+        $excludedInts = @()
     }
 
     $lmResult = Invoke-Cdb -DumpPath $dumpPath -Commands "lm"

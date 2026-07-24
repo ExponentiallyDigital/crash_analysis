@@ -2,12 +2,13 @@
 .SYNOPSIS
   Extracts candidate corrupted-memory addresses from KERNEL_SECURITY_CHECK_FAILURE
   (0x139), SYSTEM_SERVICE_EXCEPTION (0x3b), SYSTEM_THREAD_EXCEPTION_NOT_HANDLED
-  (0x7e), and MEMORY_MANAGEMENT (0x1a) dumps, and correlates the resulting
-  physical addresses - both exact matches and near misses - across multiple
-  dump files.
+  (0x7e), MEMORY_MANAGEMENT (0x1a), and CRITICAL_PROCESS_DIED (ef) dumps, and
+  correlates the resulting physical addresses - both exact matches and near
+  misses - across multiple dump files.
 
 .NOTES
-  Added 0x1a, which does not fit the other three codes' pattern:
+v0.1.7 Added CRITICAL_PROCESS_DIED (ef) analysis (same processing as 0x1a)
+v0.1.6 Added 0x1a, which does not fit the other three codes' pattern:
 
   0x139/0x3b/0x7e all reach KeBugCheckEx via an exception, so !analyze -v
   always prints a TRAP_FRAME:/CONTEXT: register block and P2-P4 are always

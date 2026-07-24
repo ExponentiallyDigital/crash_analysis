@@ -50,7 +50,7 @@ param(
     [int64]$ProximityThresholdBytes = 0x10000
 )
 
-$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a")
+$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef")
 $ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e")
 
 # Known, verified 0x1a Arg1 subtypes. Key is the lowercased, zero-stripped
@@ -313,7 +313,7 @@ foreach ($dump in $dumps) {
     $stackTextLines = Get-Section -lines $analyzeLines -startPattern '^STACK_TEXT:' -stopPatterns @('^STACK_COMMAND:') -maxLines 40
 
     if ($regBlockLines.Count -eq 0) {
-        if ($bugCheckCode -eq "0x1a") {
+        if ($bugCheckCode -eq "0x1a" -or $bugCheckCode -eq "0xef") {
             Write-Host "  No TRAP_FRAME/CONTEXT block (expected for most 0x1a subtypes, which aren't exception-based). Continuing with STACK_TEXT and subtype-specific arguments." -ForegroundColor DarkGray
         } else {
             Write-Host "  No TRAP_FRAME/CONTEXT register block found in !analyze -v output - skipping this dump." -ForegroundColor DarkYellow
@@ -356,6 +356,16 @@ foreach ($dump in $dumps) {
             }
         } else {
             Write-Host "  0x1a subtype $p1 is not a recognized/verified subtype in this script. Per Microsoft's bugcheck reference, Arg2-Arg4 meaning differs per subtype and must be checked manually before treating them as addresses - they are NOT auto-added as candidates here." -ForegroundColor DarkYellow
+        }
+    }
+
+    if ($bugCheckCode -eq "0xef") {
+        foreach ($v in @($p1, $p3)) {
+            $c = "0x" + (Get-HexClean $v)
+            if ((Is-KernelVA $c) -and ($candidateVAs -notcontains $c)) {
+                $candidateVAs += $c
+                $candidateNotes[$c] = "0xef Arg1/Arg3: process/thread object involved in critical process death (not debugger bookkeeping)."
+            }
         }
     }
 

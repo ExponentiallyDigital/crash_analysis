@@ -2,21 +2,34 @@
 .SYNOPSIS
   Extracts candidate corrupted-memory addresses from these dump types and
   correlates the resulting physical addresses - both exact matches and near
-  misses - across multiple dump files:
+  misses - across multiple dump files. Includes observed/retained dumps
+  used in testing this script.
 
-   KERNEL_SECURITY_CHECK_FAILURE (0x139)
-   SYSTEM_SERVICE_EXCEPTION (0x3b)
-   SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e)
-   MEMORY_MANAGEMENT (0x1a)
-   CRITICAL_PROCESS_DIED (ef)
+   KERNEL_SECURITY_CHECK_FAILURE (0x139) - 30 historical incidences, 3 retained dumps
+   SYSTEM_SERVICE_EXCEPTION (0x3b) - 5 historical incidences, 2 retained dump
+   CRITICAL_PROCESS_DIED (ef) - 3 historical incidences, 1 retained dumps   
+   MEMORY_MANAGEMENT (0x1a) - 3 historical incidences, 1 retained dump
+   SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e) - 1 historical incidences, 1 retained dump
 
   Does not yet cater for:
 
-   IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences (dump captured)
-   SECURE_KERNEL_ERROR (18b) - 5 historical incidences (no dumps captured)
+   IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
+   SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps
 
-  
+.BACKLOG to do
+  - ...placeholder...
+
 .NOTES
+v0.2.0 Verification pass against real dump output (139/3b/7e/ef samples)
+  confirmed the v0.1.9 fix: every OLD physical address exactly matched the
+  PXE-level artifact, every corrected leaf PFN was unrelated to it and to
+  each other. Also rewrote 0x1a subtype 0x41790: Arg2 is not a VA, so
+  running !pte on it (as earlier versions did) only ever produced the PFN
+  database's own backing page - the same class of bookkeeping artifact as
+  the PXE bug. The correct corrupted PFN is computed directly as
+  (Arg2 - MmPfnDatabase) / sizeof(_MMPFN). Confirmed the large-page case
+  (0xef, 0x3b samples) is handled correctly by the existing "last pfn
+  match" logic with no extra code needed - see Get-PfnFromPte.
 v0.1.9 CRITICAL FIX: Get-PfnFromPte was reading the FIRST "pfn" value on
   !pte's output line, which for a normal 4-level x64 translation is the
   PXE (top-level PML4 table's own physical page), not the PTE (the actual
@@ -213,15 +226,14 @@ function Get-PfnFromPte([string[]]$pteLines) {
     # systematically wrong for every candidate except a bare top-level
     # paging structure address.
     #
-    # Known limitation: for a VA backed by a 2MB or 1GB large page (PDE or
-    # PPE is itself the leaf), the reported pfn is still correct, but the
-    # +($vaInt -band 0xFFF) offset math below only preserves the low 12
-    # bits of the VA. A large page needs the low 21 or 30 bits preserved
-    # instead, so a large-page-backed candidate could still come out
-    # slightly wrong. In practice the addresses this pipeline deals with
-    # (pool objects, kernel stacks, thread objects) are essentially always
-    # 4KB-paged, so this is a low-probability edge case, not fixed here -
-    # flag it if a specific candidate needs checking.
+    # Confirmed against real large-page candidates (0xef and 0x3b dumps,
+    # July 2026 verification pass): when the leaf is a 2MB/1GB large page,
+    # !pte appends a separate "LARGE PAGE pfn <hex>" line with the VA's
+    # offset already folded in by WinDbg. That line also contains the word
+    # "pfn" and appears after the raw PDE/PPE-as-leaf value, so taking the
+    # LAST match picks it up automatically - no separate large-page handling
+    # needed, and the existing (pfn*0x1000)+(VA&0xFFF) math downstream is
+    # already correct for it.
     return $pfnMatches[$pfnMatches.Count - 1].Groups[1].Value
 }
 
@@ -399,10 +411,59 @@ foreach ($dump in $dumps) {
         if ($KnownMemoryManagementSubtypes.ContainsKey($subtype)) {
             Write-Host "  0x1a subtype $p1 recognized: $($KnownMemoryManagementSubtypes[$subtype])" -ForegroundColor Cyan
             if ($subtype -eq "41790") {
-                $p2Candidate = "0x" + (Get-HexClean $p2)
-                if ((Is-KernelVA $p2Candidate) -and ($candidateVAs -notcontains $p2Candidate)) {
-                    $candidateVAs += $p2Candidate
-                    $candidateNotes[$p2Candidate] = "Arg2 for 0x1a subtype 0x41790: address of the PFN-database entry for the corrupted page table page. The physical address below is that PFN entry's own backing page, not the corrupted page table page itself - useful for correlation, not as the fault location directly."
+                # Arg2 is NOT a VA pointing at data - it's the address of this
+                # page's entry in the PFN database array. The actual corrupted
+                # PFN is that entry's INDEX, computed as:
+                #   (Arg2 - MmPfnDatabase) / sizeof(_MMPFN)
+                # Earlier versions of this script ran !pte on Arg2 as if it
+                # were an ordinary VA, which only ever produced the physical
+                # page backing the PFN database structure itself - the same
+                # class of self-referential bookkeeping artifact as the PXE
+                # bug fixed in v0.1.9, not the actual corrupted page. This
+                # computation bypasses !pte entirely for this candidate.
+                $pfnDbResult = Invoke-Cdb -DumpPath $dumpPath -Commands "dq nt!MmPfnDatabase L1" -TimeoutSeconds 30
+                $mmpfnSizeResult = Invoke-Cdb -DumpPath $dumpPath -Commands "?? sizeof(nt!_MMPFN)" -TimeoutSeconds 30
+
+                $mmPfnDatabaseInt = $null
+                foreach ($l in $pfnDbResult.Lines) {
+                    if ($l -match '^\s*[0-9a-fA-F`]{8,17}\s+([0-9a-fA-F`]{8,17})') {
+                        $mmPfnDatabaseInt = Try-HexToInt64 ("0x" + (Get-HexClean $Matches[1]))
+                        break
+                    }
+                }
+
+                # 0x30 is the documented _MMPFN size on current x64 builds -
+                # used as a fallback only if the live ?? query can't be parsed.
+                $mmpfnSize = 0x30
+                foreach ($l in $mmpfnSizeResult.Lines) {
+                    if ($l -match '0x([0-9a-fA-F]+)\s*$') {
+                        $parsedSize = Try-HexToInt64 ("0x" + $Matches[1])
+                        if ($parsedSize) { $mmpfnSize = $parsedSize }
+                        break
+                    }
+                }
+
+                $arg2Int = Try-HexToInt64 $p2
+                if ($mmPfnDatabaseInt -and $arg2Int -and $arg2Int -gt $mmPfnDatabaseInt) {
+                    $delta = $arg2Int - $mmPfnDatabaseInt
+                    if (($delta % $mmpfnSize) -eq 0) {
+                        $pfnIndex = $delta / $mmpfnSize
+                        $physComputed = "0x{0:X}" -f ($pfnIndex * 0x1000)
+                        Write-Host "  Computed corrupted PFN 0x$($pfnIndex.ToString('X')) -> Physical $physComputed" -ForegroundColor Cyan
+                        $results += [PSCustomObject]@{
+                            Dump           = $dump.Name
+                            BugCheckCode   = $bugCheckCode
+                            CorruptionType = $p1
+                            VA             = "(computed via PFN-database index, not VA-derived)"
+                            Physical       = $physComputed
+                            PhysicalInt    = Hex-ToInt64 $physComputed
+                            Note           = "0x1a subtype 0x41790: (Arg2 - MmPfnDatabase) / sizeof(_MMPFN). Page-aligned base only - this bugcheck gives no byte offset within the page."
+                        }
+                    } else {
+                        Write-Host "  (Arg2 - MmPfnDatabase) did not divide evenly by sizeof(_MMPFN) - values may be from the wrong session. Skipping computed candidate for this dump." -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "  Could not resolve nt!MmPfnDatabase or Arg2 for this dump - skipping computed candidate." -ForegroundColor Red
                 }
             }
         } else {

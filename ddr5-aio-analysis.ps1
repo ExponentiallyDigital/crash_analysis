@@ -12,11 +12,18 @@
 
   Does not yet cater for:
 
-   IRQL_NOT_LESS_OR_EQUAL (a) - 10 historical incidences
-   SECURE_KERNEL_ERROR (18b) - 5 historical incidences
+   IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences (dump captured)
+   SECURE_KERNEL_ERROR (18b) - 5 historical incidences (no dumps captured)
 
   
 .NOTES
+v0.1.9 CRITICAL FIX: Get-PfnFromPte was reading the FIRST "pfn" value on
+  !pte's output line, which for a normal 4-level x64 translation is the
+  PXE (top-level PML4 table's own physical page), not the PTE (the actual
+  leaf entry mapping the target VA to physical memory). Every physical
+  address this script has ever produced before this version should be
+  considered unverified - re-run the full dump set before trusting any
+  further exclusion ranges. See Get-PfnFromPte for full reasoning.
 v0.1.8 Fix ($ExceptionBasedBugChecks -contains $bugCheckCode) for 0xef
 v0.1.7 Added CRITICAL_PROCESS_DIED (ef) analysis (same processing as 0x1a)
 v0.1.6 Added 0x1a, which does not fit the other three codes' pattern:
@@ -184,8 +191,38 @@ function Normalize-HexForLookup([string]$hex) {
 
 function Get-PfnFromPte([string[]]$pteLines) {
     $raw = $pteLines -join "`n"
-    if ($raw -match '(?im)^\s*pfn\s+([0-9a-f]+)') { return $Matches[1] }
-    return $null
+
+    # If the VA isn't currently backed by a physical page (paged out,
+    # demand-zero, decommitted, etc), there is no real PA to report for it
+    # at this snapshot. Don't fall back to a shallower paging level's PFN
+    # in this case - that would silently substitute the wrong page.
+    if ($raw -match '(?i)not valid|invalid PTE|Pte is zero') { return $null }
+
+    $pfnMatches = [regex]::Matches($raw, '(?im)pfn\s+([0-9a-f]+)')
+    if ($pfnMatches.Count -eq 0) { return $null }
+
+    # !pte prints one "pfn" per paging level walked on a single line - up
+    # to four for a normal 4KB page (PXE, PPE, PDE, PTE, left to right).
+    # Every level except the last is the PFN of a paging STRUCTURE (the
+    # PML4/PDPT/PD table itself), which is shared across huge swathes of
+    # unrelated address space and has nothing to do with where the VA's
+    # actual data lives. Only the LAST match - the leaf entry - maps to
+    # the physical page backing the VA. The previous version of this
+    # function anchored on line-start and only ever matched the FIRST
+    # "pfn" token, which for any 4-level walk is the PXE, not the PTE -
+    # systematically wrong for every candidate except a bare top-level
+    # paging structure address.
+    #
+    # Known limitation: for a VA backed by a 2MB or 1GB large page (PDE or
+    # PPE is itself the leaf), the reported pfn is still correct, but the
+    # +($vaInt -band 0xFFF) offset math below only preserves the low 12
+    # bits of the VA. A large page needs the low 21 or 30 bits preserved
+    # instead, so a large-page-backed candidate could still come out
+    # slightly wrong. In practice the addresses this pipeline deals with
+    # (pool objects, kernel stacks, thread objects) are essentially always
+    # 4KB-paged, so this is a low-probability edge case, not fixed here -
+    # flag it if a specific candidate needs checking.
+    return $pfnMatches[$pfnMatches.Count - 1].Groups[1].Value
 }
 
 function PFN-To-Physical([string]$pfnStr, [string]$va) {

@@ -60,6 +60,9 @@ graph TD
 
         Route -->|0x18b| A18B[Analyze_0x18B]:::process
         A18B --> A18Ba[No register block, args undocumented]:::process --> A18Bb[Tag candidates as low-confidence]:::process
+
+        Route -->|0xc000021a| AC21A[Analyze_0xC000021A]:::process
+        AC21A --> AC21Aa[No register block expected]:::process --> AC21Ab[Add Arg1 string-pointer candidate]:::process --> AC21Ac[Exclude Arg2 sign-extended NTSTATUS, protect Arg1]:::process --> AC21Ad[Log Arg3/Arg4 as out-of-scope user-mode addresses]:::errorNode
     end
 
     A139b --> PteLookup
@@ -68,6 +71,7 @@ graph TD
     AAc --> PteLookup
     AEFb --> PteLookup
     A18Bb --> PteLookup
+    AC21Ad --> PteLookup
     A1Aa -->|No, still process common candidates| PteLookup
     A1Ab --> Collect
 

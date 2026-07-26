@@ -7,18 +7,33 @@
 
    KERNEL_SECURITY_CHECK_FAILURE (0x139) - 30 historical incidences, 3 retained dumps
    IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
+   SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps  - low confidence; see v0.3.0 notes below
    SYSTEM_SERVICE_EXCEPTION (0x3b) - 5 historical incidences, 2 retained dump
    CRITICAL_PROCESS_DIED (ef) - 3 historical incidences, 1 retained dumps 
    MEMORY_MANAGEMENT (0x1a) - 3 historical incidences, 1 retained dump
    SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e) - 1 historical incidences, 1 retained dump
+   WINLOGON_FATAL_ERROR (0xc000021a)
 
   Does not yet cater for:
-   SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps
+  ...
 
 .BACKLOG to do
   - ...placeholder...
 
 .NOTES
+v0.4.0 Added 0xc000021a (WINLOGON_FATAL_ERROR). Not exception-based (no
+  TRAP_FRAME/CONTEXT block). Arg1 is documented ("string that identifies
+  the problem") and a genuine kernel VA, so it's added as a candidate like
+  0xef/0xa's documented arguments. Arg2 is the interesting case: it's the
+  NTSTATUS error code, not an address, but a sign-extended 32-bit NTSTATUS
+  (ffffffffc0000005-style) happens to satisfy the canonical-kernel-VA
+  pattern by pure coincidence and commonly reappears in STACK_TEXT as one
+  of KeBugCheckEx's own restated arguments - this needed its own exclusion
+  branch that drops P2-P4 but deliberately protects P1, since blanket-
+  excluding all of P1-P4 (as done for the exception-based codes) would
+  have discarded the one genuinely useful candidate. Arg3/Arg4 are
+  typically user-mode addresses in this dump's own process - out of scope
+  for this pipeline's kernel-only !pte translation, and not attempted.
 v0.3.0 Added 0xa and 0x18b, and fixed a wording bug: the "no TRAP_FRAME/
   CONTEXT block" message was hardcoded to name "0x1a" even when the dump
   was actually 0xef. It's now derived from $ExceptionBasedBugChecks
@@ -103,7 +118,7 @@ param(
     [int64]$ProximityThresholdBytes = 0x10000
 )
 
-$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef", "0xa", "0x18b")
+$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef", "0xa", "0x18b", "0xc000021a")
 $ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e", "0xa")
 
 # Known, verified 0x1a Arg1 subtypes. Key is the lowercased, zero-stripped
@@ -378,6 +393,20 @@ foreach ($dump in $dumps) {
         $excludedInts = @($p1, $p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
     } elseif ($bugCheckCode -eq "0x1a") {
         $excludedInts = @($p1) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
+    } elseif ($bugCheckCode -eq "0xc000021a") {
+        # Arg1 here is a genuine, documented data pointer ("string that
+        # identifies the problem") and must NOT be excluded - it's added
+        # as a real candidate further down. Arg2 (ffffffffc0000005-style)
+        # is the dangerous one to leave in: a sign-extended 32-bit NTSTATUS
+        # happens to satisfy the canonical-kernel-VA pattern purely by
+        # coincidence, and it commonly reappears in STACK_TEXT as one of
+        # KeBugCheckEx's own restated call arguments - the same class of
+        # false positive fixed for 0x139/0x3b/0x7e's header self-reference,
+        # just arriving via numeric coincidence instead of literal text.
+        # Arg3/Arg4 are typically user-mode addresses for this code and
+        # won't pass Is-KernelVA regardless, but are excluded here too for
+        # safety in case a future dump has them in-range.
+        $excludedInts = @($p2, $p3, $p4) | ForEach-Object { Try-HexToInt64 $_ } | Where-Object { $null -ne $_ }
     } else {
         $excludedInts = @()
     }
@@ -532,6 +561,23 @@ foreach ($dump in $dumps) {
         # documentation. Candidates for this code come from STACK_TEXT
         # only, and are tagged below so they're visibly lower-confidence.
         Write-Host "  0x18b (SECURE_KERNEL_ERROR): Arg1-Arg4 aren't officially documented by Microsoft. Arg2/Arg3 look like an exception code and faulting instruction address by pattern, but that's inferred, not confirmed - not auto-added as candidates. Relying on STACK_TEXT only." -ForegroundColor DarkYellow
+    }
+
+    if ($bugCheckCode -eq "0xc000021a") {
+        # Arg1 ("string that identifies the problem") is documented and
+        # genuinely a kernel-space pointer - added the same way as 0xef's
+        # Arg1/Arg3 and 0xa's Arg1.
+        $c = "0x" + (Get-HexClean $p1)
+        if ((Is-KernelVA $c) -and ($candidateVAs -notcontains $c)) {
+            $candidateVAs += $c
+            $candidateNotes[$c] = "0xc000021a Arg1: address of the string identifying the problem (not debugger bookkeeping)."
+        }
+        # Arg3/Arg4 are typically user-mode addresses (this dump's own
+        # values sit inside csrss.exe's own module range, per its lm
+        # output) - this pipeline only translates kernel-space VAs via a
+        # kernel-context !pte walk, so a user-mode address is out of scope
+        # here regardless and isn't attempted.
+        Write-Host "  0xc000021a: Arg3/Arg4 are typically user-mode addresses (this process's own VA space), which this pipeline can't translate the same way as kernel addresses - not attempted." -ForegroundColor DarkGray
     }
 
     $preExclusionCount = $candidateVAs.Count

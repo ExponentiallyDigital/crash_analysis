@@ -5,9 +5,6 @@
 
 Tools to assist with computer stability troubleshooting.
 
-> [!TIP]
-> **`ddr5-aio-analysis.ps1`** is unique, its aim is to identify the in-RAM location of physical RAM defects through correlating the potential location of corrupted RAM and translating virtual to physical addresses from multiple full Windows `memory.dmp` files.
-
 > [!WARNING]
 > Understand what these scripts do before use!
 

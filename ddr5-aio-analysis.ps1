@@ -6,20 +6,41 @@
   used in testing this script.
 
    KERNEL_SECURITY_CHECK_FAILURE (0x139) - 30 historical incidences, 3 retained dumps
+   IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
    SYSTEM_SERVICE_EXCEPTION (0x3b) - 5 historical incidences, 2 retained dump
-   CRITICAL_PROCESS_DIED (ef) - 3 historical incidences, 1 retained dumps   
+   CRITICAL_PROCESS_DIED (ef) - 3 historical incidences, 1 retained dumps 
    MEMORY_MANAGEMENT (0x1a) - 3 historical incidences, 1 retained dump
    SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7e) - 1 historical incidences, 1 retained dump
 
   Does not yet cater for:
-
-   IRQL_NOT_LESS_OR_EQUAL (a) - 11 historical incidences, 1 retained dump
    SECURE_KERNEL_ERROR (18b) - 6 historical incidences, 1 retained dumps
 
 .BACKLOG to do
   - ...placeholder...
 
 .NOTES
+v0.3.0 Added 0xa and 0x18b, and fixed a wording bug: the "no TRAP_FRAME/
+  CONTEXT block" message was hardcoded to name "0x1a" even when the dump
+  was actually 0xef. It's now derived from $ExceptionBasedBugChecks
+  membership instead of naming specific codes, so it's correct for any
+  code added in future too.
+
+  0xa (IRQL_NOT_LESS_OR_EQUAL) fits the same pattern as 0x139/0x3b/0x7e -
+  real documented arguments, genuine TRAP_FRAME block - so it's simply
+  added to $ExceptionBasedBugChecks. Arg1 ("memory referenced") is also
+  explicitly added as a candidate like 0xef's Arg1/Arg3, though it's
+  commonly too short/non-canonical to pass Is-KernelVA for this bugcheck
+  (frequently a near-NULL dereference), which is the correct outcome.
+
+  0x18b (SECURE_KERNEL_ERROR) is NOT exception-based (no TRAP_FRAME/
+  CONTEXT block) and, unlike every other code here, !analyze -v gives NO
+  argument descriptions for it at all - Microsoft's public documentation
+  is genuinely thin. Arg2/Arg3 look like an NTSTATUS code and a faulting
+  instruction address by pattern-matching against 0x3b/0x7e's format and
+  this dump's own FAILURE_BUCKET_ID, but that's an inference, not a
+  confirmed fact, so they are deliberately NOT auto-added as candidates
+  the way 0x1a/0xef's documented arguments were. Candidates for this code
+  come from STACK_TEXT only and are tagged with a low-confidence Note.
 v0.2.0 Verification pass against real dump output (139/3b/7e/ef samples)
   confirmed the v0.1.9 fix: every OLD physical address exactly matched the
   PXE-level artifact, every corrected leaf PFN was unrelated to it and to
@@ -82,8 +103,8 @@ param(
     [int64]$ProximityThresholdBytes = 0x10000
 )
 
-$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef")
-$ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e")
+$SupportedBugChecks = @("0x139", "0x3b", "0x7e", "0x1a", "0xef", "0xa", "0x18b")
+$ExceptionBasedBugChecks = @("0x139", "0x3b", "0x7e", "0xa")
 
 # Known, verified 0x1a Arg1 subtypes. Key is the lowercased, zero-stripped
 # hex value of Arg1. Extend only after checking Microsoft's bugcheck
@@ -376,11 +397,15 @@ foreach ($dump in $dumps) {
     $stackTextLines = Get-Section -lines $analyzeLines -startPattern '^STACK_TEXT:' -stopPatterns @('^STACK_COMMAND:') -maxLines 40
 
     if ($regBlockLines.Count -eq 0) {
-        if ($bugCheckCode -eq "0x1a" -or $bugCheckCode -eq "0xef") {
-            Write-Host "  No TRAP_FRAME/CONTEXT block (expected for most 0x1a subtypes, which aren't exception-based). Continuing with STACK_TEXT and subtype-specific arguments." -ForegroundColor DarkGray
-        } else {
+        if ($ExceptionBasedBugChecks -contains $bugCheckCode) {
+            # This code normally DOES route through a captured exception
+            # (139/3b/7e/0xa all reach KeBugCheckEx via .trap/.cxr), so a
+            # missing register block here is a genuine anomaly for this
+            # dump, not an expected condition - skip rather than guess.
             Write-Host "  No TRAP_FRAME/CONTEXT register block found in !analyze -v output - skipping this dump." -ForegroundColor DarkYellow
             continue
+        } else {
+            Write-Host "  No TRAP_FRAME/CONTEXT block (expected - $bugCheckCode doesn't route through a captured exception/context record). Continuing with STACK_TEXT and any subtype-specific arguments." -ForegroundColor DarkGray
         }
     }
 
@@ -481,6 +506,34 @@ foreach ($dump in $dumps) {
         }
     }
 
+    if ($bugCheckCode -eq "0xa") {
+        # Arg1 ("memory referenced") is documented by Microsoft, so it's
+        # attempted here the same way as 0xef's Arg1/Arg3 - but IRQL_NOT_
+        # LESS_OR_EQUAL is very often a near-NULL or otherwise non-canonical
+        # pointer dereference, so this frequently won't pass Is-KernelVA at
+        # all. That's the correct, expected outcome, not a bug.
+        $c = "0x" + (Get-HexClean $p1)
+        if ((Is-KernelVA $c) -and ($candidateVAs -notcontains $c)) {
+            $candidateVAs += $c
+            $candidateNotes[$c] = "0xa Arg1: memory referenced at time of the fault (not debugger bookkeeping)."
+        }
+    }
+
+    if ($bugCheckCode -eq "0x18b") {
+        # Unlike every other code handled here, !analyze -v gives NO
+        # argument descriptions at all for 0x18b - Microsoft's public
+        # documentation is genuinely thin. Arg2 (ffffffffc0000005-pattern)
+        # resembles the NTSTATUS access-violation code seen in 0x3b/0x7e,
+        # and Arg3 looks like a faulting instruction address (consistent
+        # with this dump's own FAILURE_BUCKET_ID naming a function+offset),
+        # but that's an inference from pattern-matching, not a confirmed
+        # fact. Deliberately NOT auto-added as candidates the way 0x1a/0xef
+        # are, since those additions were justified by explicit Microsoft
+        # documentation. Candidates for this code come from STACK_TEXT
+        # only, and are tagged below so they're visibly lower-confidence.
+        Write-Host "  0x18b (SECURE_KERNEL_ERROR): Arg1-Arg4 aren't officially documented by Microsoft. Arg2/Arg3 look like an exception code and faulting instruction address by pattern, but that's inferred, not confirmed - not auto-added as candidates. Relying on STACK_TEXT only." -ForegroundColor DarkYellow
+    }
+
     $preExclusionCount = $candidateVAs.Count
     $candidateVAs = $candidateVAs | Where-Object { $excludedInts -notcontains (Hex-ToInt64 $_) }
     $excludedCount = $preExclusionCount - $candidateVAs.Count
@@ -505,7 +558,11 @@ foreach ($dump in $dumps) {
         $phys = PFN-To-Physical $pfn $va
         if ($phys) {
             $note = ""
-            if ($candidateNotes.ContainsKey($va)) { $note = $candidateNotes[$va] }
+            if ($candidateNotes.ContainsKey($va)) {
+                $note = $candidateNotes[$va]
+            } elseif ($bugCheckCode -eq "0x18b") {
+                $note = "0x18b argument semantics aren't officially documented by Microsoft - this candidate comes from STACK_TEXT only, not an explicitly-documented bugcheck argument. Lower confidence than other codes."
+            }
             $results += [PSCustomObject]@{
                 Dump           = $dump.Name
                 BugCheckCode   = $bugCheckCode

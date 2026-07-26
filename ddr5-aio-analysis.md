@@ -1,5 +1,95 @@
 # ddr5-aio-analysis.md
 
+```mermaid
+graph TD
+    Start([Start]):::terminal --> ValidateParams
+
+    subgraph P1["1. Initialization"]
+        ValidateParams[Validate DumpFolder and OutputFolder params]:::process --> CheckCdb{cdb.exe path exists?}:::decision
+        CheckCdb -->|No| AbortInit[Abort: cdb.exe not found]:::errorNode
+        CheckCdb -->|Yes| MakeOutDir[Create OutputFolder if missing]:::process
+    end
+
+    AbortInit --> End
+    MakeOutDir --> EnumDumps
+
+    subgraph P2["2. File Enumeration"]
+        EnumDumps[Get-ChildItem: sort *.dmp files]:::process --> MoreDumps{More dumps remaining?}:::decision
+    end
+
+    MoreDumps -->|No| Correlate
+    MoreDumps -->|Yes| RunAnalyze
+
+    subgraph P5["5. Error Handling"]
+        RunAnalyze[Invoke-Cdb: symfix, reload, analyze -v]:::process --> TimedOut{cdb timed out?}:::decision
+        TimedOut -->|Yes: kill process| PartialOutput[Use partial buffered output]:::process
+        TimedOut -->|No| FullOutput[Use full output]:::process
+        PartialOutput --> HasCode{BUGCHECK_CODE parsed?}:::decision
+        FullOutput --> HasCode
+        HasCode -->|No: too damaged| SkipA[Skip dump]:::errorNode
+        HasCode -->|Yes| IsSupported{Code in SupportedBugChecks?}:::decision
+        IsSupported -->|No: unhandled code| SkipB[Skip dump]:::errorNode
+    end
+
+    SkipA --> MoreDumps
+    SkipB --> MoreDumps
+    IsSupported -->|Yes| BuildModules[Invoke-Cdb: lm, build module range list]:::process
+    BuildModules --> ExtractStack[Extract STACK_TEXT frames, common to all codes]:::process
+    ExtractStack --> Route{Route by BugCheckCode}:::decision
+
+    subgraph P34["3 and 4. Stop Code Routing and Sub-processes"]
+        Route -->|0x139| A139[Analyze_0x139]:::process
+        A139 --> A139a[Extract TRAP_FRAME via .trap]:::process --> A139b[Exclude P1-P4 self-reference values]:::process
+
+        Route -->|0x3b| A3B[Analyze_0x3B]:::process
+        A3B --> A3Ba[Extract CONTEXT via .cxr]:::process --> A3Bb[Exclude P1-P4 self-reference values]:::process
+
+        Route -->|0x7e| A7E[Analyze_0x7E]:::process
+        A7E --> A7Ea[Extract CONTEXT via .cxr]:::process --> A7Eb[Exclude P1-P4 self-reference values]:::process
+
+        Route -->|0xa| AA[Analyze_0xA]:::process
+        AA --> AAa[Extract TRAP_FRAME via .trap]:::process --> AAb[Add Arg1 memory-referenced candidate]:::process --> AAc[Exclude P1-P4 self-reference values]:::process
+
+        Route -->|0xef| AEF[Analyze_0xEF]:::process
+        AEF --> AEFa[No register block expected]:::process --> AEFb[Add Arg1/Arg3 process-thread object candidates]:::process
+
+        Route -->|0x1a| A1A[Analyze_0x1A]:::process
+        A1A --> A1Aa{Subtype = 0x41790?}:::decision
+        A1Aa -->|Yes| A1Ab[Compute PFN: Arg2 - MmPfnDatabase / sizeof MMPFN]:::process
+        A1Aa -->|No| A1Ac[Log unrecognized subtype, no extra candidate]:::errorNode
+
+        Route -->|0x18b| A18B[Analyze_0x18B]:::process
+        A18B --> A18Ba[No register block, args undocumented]:::process --> A18Bb[Tag candidates as low-confidence]:::process
+    end
+
+    A139b --> PteLookup
+    A3Bb --> PteLookup
+    A7Eb --> PteLookup
+    AAc --> PteLookup
+    AEFb --> PteLookup
+    A18Bb --> PteLookup
+    A1Aa -->|No, still process common candidates| PteLookup
+    A1Ab --> Collect
+
+    PteLookup[Run !pte, take leaf PFN, compute Physical Address]:::process --> ModuleFilter{Address inside loaded module range?}:::decision
+    ModuleFilter -->|Yes: discard| Discard[Discard candidate]:::errorNode
+    ModuleFilter -->|No: keep| Collect[Add candidate to results collection]:::process
+
+    Discard --> MoreDumps
+    Collect --> MoreDumps
+
+    subgraph P6["6. Consolidation and Output"]
+        Correlate[Correlate physical addresses: exact match and near match, SameCode vs CrossCode]:::process --> GenReport[Generate CSV reports: Candidates, Correlations, NearMatches, Summary]:::process
+    end
+
+    GenReport --> End([End]):::terminal
+
+    classDef terminal fill:#bbf7d0,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef process fill:#bfdbfe,stroke:#1d4ed8,stroke-width:1px,color:#1e293b
+    classDef decision fill:#fde68a,stroke:#b45309,stroke-width:1px,color:#1e293b
+    classDef errorNode fill:#fecaca,stroke:#b91c1c,stroke-width:1px,color:#1e293b
+```
+
 - [ddr5-aio-analysis.md](#ddr5-aio-analysismd)
   - [Set up your environment](#set-up-your-environment)
     - [Prevent Windows from overwriting the last crash dump](#prevent-windows-from-overwriting-the-last-crash-dump)
@@ -96,7 +186,8 @@ Create a new task (not a Basic Task) with the following settings:
 
 - Program/script: `powershell.exe`
 - Arguments:
-  ```
+
+  ```cmd
   -ExecutionPolicy Bypass -File "C:\Users\andrew\Documents\crash_analysis\SetDumpPath.ps1"
   ```
 

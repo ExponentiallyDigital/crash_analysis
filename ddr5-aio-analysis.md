@@ -2,17 +2,19 @@
 
 - [ddr5-aio-analysis.md](#ddr5-aio-analysismd)
   - [Overview](#overview)
-  - [Background: why correlate physical addresses](#background-why-correlate-physical-addresses)
+  - [Background: why correlate physical addresses?](#background-why-correlate-physical-addresses)
     - [Key questions](#key-questions)
     - [What we can't ascertain](#what-we-cant-ascertain)
     - [Caveats: what dump analysis cannot rule out](#caveats-what-dump-analysis-cannot-rule-out)
+      - [Stuck counter bit (same physical address)](#stuck-counter-bit-same-physical-address)
+      - [Address line failure (XOR = power of 2)](#address-line-failure-xor--power-of-2)
+  - [Prerequisites](#prerequisites)
+  - [Set up your environment](#set-up-your-environment)
     - [Memory interleaving](#memory-interleaving)
       - [Where to find it in the BIOS](#where-to-find-it-in-the-bios)
         - [On AMD systems](#on-amd-systems)
         - [On Intel systems](#on-intel-systems)
         - [Legacy / alternative terms](#legacy--alternative-terms)
-  - [Prerequisites](#prerequisites)
-  - [Set up your environment](#set-up-your-environment)
     - [Prevent Windows from overwriting the last crash dump](#prevent-windows-from-overwriting-the-last-crash-dump)
       - [1. PowerShell script: `SetDumpPath.ps1`](#1-powershell-script-setdumppathps1)
       - [2. Backup your default crash settings (for reference)](#2-backup-your-default-crash-settings-for-reference)
@@ -23,9 +25,13 @@
     - [Usage](#usage)
     - [How it works](#how-it-works)
     - [Output files](#output-files)
-  - [Sample output](#sample-output)
+  - [Sample display output](#sample-display-output)
   - [Interpreting results](#interpreting-results)
   - [Files in this repo](#files-in-this-repo)
+  - [Bugs and feature requests](#bugs-and-feature-requests)
+  - [Donations](#donations)
+  - [Support](#support)
+  - [License](#license)
 
 ---
 
@@ -49,7 +55,7 @@ Over the course of seven months I ran 80+ tests during which the picture solidif
 
 The RAM in question is ADATA AX5U6000C3032G 2×32 GB, SK Hynix A‑die (4.1), dual‑rank, EXPO 6000 MT/s CL30-40-40-76, does not support RFM, and is motherboard QVL listed.
 
-Single stick testing of the matched pair showed one stick always crashes at T1 or T2. 
+Single stick testing of the matched pair showed one stick always crashes at T1 or T2.
 
 As an intellectual challenge I wanted to find, if possible, commonalities between crashes. On the assumption that Windows stop codes will change depending on which Windows structure is corrupted, and short of physical analysis (with FIB, e-beam, or decapping and visual inspection, to ascertain if the defect is in the refresh counter, the row decoder, or the bank multiplexer), we can look for physical address correlations in full Windows dump files.
 
@@ -71,7 +77,7 @@ As an intellectual challenge I wanted to find, if possible, commonalities betwee
 
 ### Caveats: what dump analysis cannot rule out
 
-None of the above or below mechanisms are things this script - or any dump analysis - can definitively distinguish between. What the script *can* do is tell you whether the same physical page keeps turning up across independent crashes, which narrows the field but does not itself identify which of the mechanisms is responsible. That distinction still requires physical hardware analysis or a controlled exclusion test (see [Interpreting results](#interpreting-results)).
+None of the above or below mechanisms are things this script - or any dump analysis - can definitively distinguish between. What the script _can_ do is tell you whether the same physical page keeps turning up across independent crashes, which narrows the field but does not itself identify which of the mechanisms is responsible. That distinction still requires physical hardware analysis or a controlled exclusion test (see [Interpreting results](#interpreting-results)).
 
 #### Stuck counter bit (same physical address)
 
@@ -259,16 +265,16 @@ Once you have a folder of full kernel dumps collected using the rotation setup a
 
 The script recognises eight Windows stop codes. Each one reaches `KeBugCheckEx` differently, so each is handled with a method matched to what that specific bugcheck actually gives you — not every code produces a `TRAP_FRAME:`/`CONTEXT:` register block, and not every documented argument is safe to treat as an address.
 
-| Code | Name | Register block | Notes |
-|---|---|---|---|
-| `0x139` | KERNEL_SECURITY_CHECK_FAILURE | `TRAP_FRAME:` | P1–P4 excluded (debugger self-reference addresses) |
-| `0x3b` | SYSTEM_SERVICE_EXCEPTION | `CONTEXT:` | P1–P4 excluded |
-| `0x7e` | SYSTEM_THREAD_EXCEPTION_NOT_HANDLED | `CONTEXT:` | P1–P4 excluded |
-| `0xa` | IRQL_NOT_LESS_OR_EQUAL | `TRAP_FRAME:` | Arg1 ("memory referenced") added as a candidate; P1–P4 also excluded as bookkeeping |
-| `0x1a` | MEMORY_MANAGEMENT | none (usually) | Only subtype `0x41790` is handled: the true corrupted PFN is computed as `(Arg2 - MmPfnDatabase) / sizeof(_MMPFN)`, not read via `!pte` |
-| `0xef` | CRITICAL_PROCESS_DIED | none | Arg1/Arg3 (process or thread object) added as candidates |
-| `0x18b` | SECURE_KERNEL_ERROR | none | Arguments are not officially documented by Microsoft; candidates come from `STACK_TEXT` only and are tagged low-confidence |
-| `0xc000021a` | WINLOGON_FATAL_ERROR | none | Arg1 (string pointer) added as a candidate; Arg2 (a sign-extended NTSTATUS) is explicitly excluded since it coincidentally matches the canonical-kernel-address pattern; Arg3/Arg4 are typically user-mode addresses and out of scope |
+| Code         | Name                                | Register block | Notes                                                                                                                                                                                                                                 |
+| ------------ | ----------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0x139`      | KERNEL_SECURITY_CHECK_FAILURE       | `TRAP_FRAME:`  | P1–P4 excluded (debugger self-reference addresses)                                                                                                                                                                                    |
+| `0x3b`       | SYSTEM_SERVICE_EXCEPTION            | `CONTEXT:`     | P1–P4 excluded                                                                                                                                                                                                                        |
+| `0x7e`       | SYSTEM_THREAD_EXCEPTION_NOT_HANDLED | `CONTEXT:`     | P1–P4 excluded                                                                                                                                                                                                                        |
+| `0xa`        | IRQL_NOT_LESS_OR_EQUAL              | `TRAP_FRAME:`  | Arg1 ("memory referenced") added as a candidate; P1–P4 also excluded as bookkeeping                                                                                                                                                   |
+| `0x1a`       | MEMORY_MANAGEMENT                   | none (usually) | Only subtype `0x41790` is handled: the true corrupted PFN is computed as `(Arg2 - MmPfnDatabase) / sizeof(_MMPFN)`, not read via `!pte`                                                                                               |
+| `0xef`       | CRITICAL_PROCESS_DIED               | none           | Arg1/Arg3 (process or thread object) added as candidates                                                                                                                                                                              |
+| `0x18b`      | SECURE_KERNEL_ERROR                 | none           | Arguments are not officially documented by Microsoft; candidates come from `STACK_TEXT` only and are tagged low-confidence                                                                                                            |
+| `0xc000021a` | WINLOGON_FATAL_ERROR                | none           | Arg1 (string pointer) added as a candidate; Arg2 (a sign-extended NTSTATUS) is explicitly excluded since it coincidentally matches the canonical-kernel-address pattern; Arg3/Arg4 are typically user-mode addresses and out of scope |
 
 ### Usage
 
@@ -385,7 +391,7 @@ For each dump, in short: `!analyze -v` and `lm` are captured, the bugcheck code 
 The script writes four CSVs to `-OutputFolder`:
 
 - **`FaultContext-Candidates.csv`** — every surviving candidate from every dump: dump name, stop code, the code's first bugcheck argument (`CorruptionType`), the original virtual address, the translated physical address, and a `Note` field used for anything that needs extra context (e.g. a computed-rather-than-translated 0x1a address, or a low-confidence 0x18b tag).
-- **`PhysicalAddress-Correlations.csv`** — physical addresses that match *exactly* across two or more dumps, tagged `SameCode` (all matching dumps share one stop code) or `CrossCode` (different stop codes landed on the same physical page — the stronger of the two, since there's no structural reason unrelated failure modes should share a physical address unless something there is actually bad).
+- **`PhysicalAddress-Correlations.csv`** — physical addresses that match _exactly_ across two or more dumps, tagged `SameCode` (all matching dumps share one stop code) or `CrossCode` (different stop codes landed on the same physical page — the stronger of the two, since there's no structural reason unrelated failure modes should share a physical address unless something there is actually bad).
 - **`PhysicalAddress-NearMatches.csv`** — pairs of physical addresses from different dumps within `-ProximityThresholdBytes` of each other but not identical, similarly tagged `SameCode`/`CrossCode`.
 - **`CorruptionType-Summary.csv`** — one row per dump, showing its stop code and first bugcheck argument, useful for spotting whether the same corruption subtype (e.g. `0x139` Arg1 = `3`, a LIST_ENTRY double-remove) recurs across otherwise-unrelated crashes.
 
@@ -398,14 +404,14 @@ The script writes four CSVs to `-OutputFolder`:
 
 ## Interpreting results
 
-A `CrossCode` match in `PhysicalAddress-Correlations.csv` is the single strongest signal this script can produce, precisely because it doesn't depend on any theory about *why* two crashes would share a location — an access violation and a LIST_ENTRY corruption have no structural reason to land on the same physical page unless something at that page is actually implicated. A `SameCode` match is weaker, since it has a mundane alternative explanation: similar allocator behaviour, similar call paths, or similar stack layout across similar crashes can produce a shared address with nothing wrong with the hardware at all.
+A `CrossCode` match in `PhysicalAddress-Correlations.csv` is the single strongest signal this script can produce, precisely because it doesn't depend on any theory about _why_ two crashes would share a location — an access violation and a LIST_ENTRY corruption have no structural reason to land on the same physical page unless something at that page is actually implicated. A `SameCode` match is weaker, since it has a mundane alternative explanation: similar allocator behaviour, similar call paths, or similar stack layout across similar crashes can produce a shared address with nothing wrong with the hardware at all.
 
-Neither kind of match is proof by itself. Before trusting any specific physical address enough to act on it (for example, excluding it from Windows via a bad-memory list), it's worth checking what's actually supposed to be at that address — `!pfn`, `!pool`, or `!thread` against the physical/virtual address in question will tell you whether it's a legitimate, mundane kernel object (which doesn't rule out a hardware fault, but removes one alternative explanation) or something that looks genuinely inconsistent. Re-read the [caveats](#caveats-what-dump-analysis-cannot-rule-out) section above before drawing a firm conclusion either way: this script can tell you *that* a physical address recurs, not *which* of the five underlying DRAM failure mechanisms would explain it, or rule out that the recurrence is coincidental.
+Neither kind of match is proof by itself. Before trusting any specific physical address enough to act on it (for example, excluding it from Windows via a bad-memory list), it's worth checking what's actually supposed to be at that address — `!pfn`, `!pool`, or `!thread` against the physical/virtual address in question will tell you whether it's a legitimate, mundane kernel object (which doesn't rule out a hardware fault, but removes one alternative explanation) or something that looks genuinely inconsistent. Re-read the [caveats](#caveats-what-dump-analysis-cannot-rule-out) section above before drawing a firm conclusion either way: this script can tell you _that_ a physical address recurs, not _which_ of the five underlying DRAM failure mechanisms would explain it, or rule out that the recurrence is coincidental.
 
 ## Files in this repo
 
-| file                                                                                                            | description                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| file                                                                                                            | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [ddr5-aio-analysis.ps1](https://github.com/ExponentiallyDigital/crash_analysis/blob/main/ddr5-aio-analysis.ps1) | DDR5 "all-in-one" analysis for faulty RAM: extracts candidate corrupted-memory addresses from `KERNEL_SECURITY_CHECK_FAILURE` (0x139), `SYSTEM_SERVICE_EXCEPTION` (0x3b), `SYSTEM_THREAD_EXCEPTION_NOT_HANDLED` (0x7e), `IRQL_NOT_LESS_OR_EQUAL` (0xa), `MEMORY_MANAGEMENT` (0x1a), `CRITICAL_PROCESS_DIED` (0xef), `SECURE_KERNEL_ERROR` (0x18b), and `WINLOGON_FATAL_ERROR` (0xc000021a) dumps, and correlates the resulting physical addresses (both exact matches and near misses) across multiple dump files. |
 
 ---

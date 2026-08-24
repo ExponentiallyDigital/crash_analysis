@@ -27,8 +27,8 @@ $consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "System Dashboard"
 
-# Set the window size (Width: 460px, Height: 340px).
-$form.Size = New-Object System.Drawing.Size(400, 220)
+# Set the window size (Width: 460px, Height: 260px for 20px spacing).
+$form.Size = New-Object System.Drawing.Size(460, 260)
 
 # Ensure the window opens directly in the center of the user's screen.
 #$form.StartPosition = "CenterScreen"
@@ -68,7 +68,9 @@ function New-DashboardLabel($text, $top, $color) {
 # ================================================
 # Use a Hash table to store labels. This allows us to reference them by name 
 # (e.g., $labels.RAM) later in the script.
+# 20px spacing between each label
 $labels = @{
+    # Key Name   = Call Function (Text, Top Position, Color)
     Uptime       = New-DashboardLabel ""  20  'Yellow'
     BootTime     = New-DashboardLabel ""  40  'Cyan'
     TargetTime   = New-DashboardLabel ""  60  'Orange'
@@ -305,20 +307,16 @@ if ($null -eq $secondary) {
     $secondary = $screens | Where-Object { $_.Primary } | Select-Object -First 1
 }
 
-$bounds = $secondary.Bounds
+# Use WorkingArea to exclude taskbar
+$workingArea = $secondary.WorkingArea
 
 # Form dimensions (match your original size)
 $width  = $form.Width   # 460
-$height = $form.Height  # 340
+$height = $form.Height  # 260
 
-# !!!!!!!!!!!!! 
-# !!!!!!!!!!!!! edit below lines:
-# !!!!!!!!!!!!! 
-# Bottom-right of LEFT monitor:
-# Right edge = $bounds.Right (0 in your case)
-# Bottom edge = $bounds.Bottom (800)
-$x = $bounds.Right - $width + 7     # e.g., 0 - 460 - 40 = -500 (right edge of left monitor)
-$y = $bounds.Bottom - $height - 0   # e.g., 800 - 340 - 60 = 400 (above bottom)
+# Position in bottom-right corner, above taskbar
+$x = $workingArea.Right - $width + 7
+$y = $workingArea.Bottom - $height
 
 # Apply position
 $form.Location = New-Object System.Drawing.Point($x, $y)
@@ -329,7 +327,7 @@ $form.BringToFront()
 
 # Debug (keep for now, remove later if happy)
 Write-Host "Secondary monitor: $($secondary.DeviceName)" -ForegroundColor Magenta
-Write-Host "Bounds: X=$($bounds.X) to $($bounds.Right), Y=$($bounds.Y) to $($bounds.Bottom)" -ForegroundColor Magenta
+Write-Host "WorkingArea: X=$($workingArea.X) to $($workingArea.Right), Y=$($workingArea.Y) to $($workingArea.Bottom)" -ForegroundColor Magenta
 Write-Host "Form positioned at: X=$x, Y=$y (size $($width)x$($height))" -ForegroundColor Magenta
 
 # ================================================

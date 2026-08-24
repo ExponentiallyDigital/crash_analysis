@@ -1,6 +1,6 @@
-# =============================================================================
+# ================================================
 # 1. LOAD ASSEMBLIES
-# =============================================================================
+# ================================================
 # Load the .NET assemblies required to build Windows Forms (GUI) and handle 
 # graphical elements like Fonts, Colors, and Window Sizes.
 Add-Type -AssemblyName System.Windows.Forms
@@ -20,9 +20,9 @@ $consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
 # Minimize it
 [Console.Window]::ShowWindow($consoleHwnd, 6) | Out-Null
 
-# =============================================================================
+# ================================================
 # 2. FORM SETUP
-# =============================================================================
+# ================================================
 # Create the main window container.
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "System Dashboard"
@@ -36,9 +36,9 @@ $form.Size = New-Object System.Drawing.Size(460, 340)
 # Set a black background for a high-contrast, "terminal" look.
 $form.BackColor = 'Black'
 
-# =============================================================================
+# ================================================
 # 3. HELPER FUNCTION
-# =============================================================================
+# ================================================
 # A helper function to generate standard labels. This avoids repeating code 
 # for every single line of text on the dashboard.
 # Params:
@@ -63,9 +63,9 @@ function New-DashboardLabel($text, $top, $color) {
     return $lbl
 }
 
-# =============================================================================
+# ================================================
 # 4. INITIALIZE LABELS
-# =============================================================================
+# ================================================
 # Use a Hash table to store labels. This allows us to reference them by name 
 # (e.g., $labels.RAM) later in the script.
 $labels = @{
@@ -85,19 +85,19 @@ $labels = @{
 # If you skip this, the labels exist in memory but won't appear on screen.
 foreach ($lbl in $labels.Values) { $form.Controls.Add($lbl) }
 
-# =============================================================================
+# ================================================
 # 5. CONFIGURATION
-# =============================================================================
+# ================================================
 # Define the target duration (e.g., a 12-hour shift or maintenance window).
 # Change this value to adjust the countdown timer.
 # !!!!!!!!!!!!! 
 # !!!!!!!!!!!!! edit below line:
 # !!!!!!!!!!!!! 
-$Offset = New-TimeSpan -Hours 05 -Minutes 56
+$Offset = New-TimeSpan -Hours 66 -Minutes 25
 
-# =============================================================================
+# ================================================
 # 6. UPDATE LOGIC
-# =============================================================================
+# ================================================
 # This function gathers system data and updates the label text.
 function Update-Dashboard {
     param($Offset)
@@ -178,7 +178,7 @@ function Update-Dashboard {
             # Message label
             $lblMsg = New-Object System.Windows.Forms.Label
             $lblMsg.Text = "WARNING: System is approaching expected crash window!`r`n`r`n" +
-                        "Remaining: $($remaining.Hours)h $($remaining.Minutes)m`r`n" +
+                        "Remaining: $([math]::Floor($remaining.TotalHours))h $($remaining.Minutes)m`r`n" +
                         "Current uptime: $($uptime.Days) days $($uptime.Hours)h $($uptime.Minutes)m`r`n`r`n" +
                         "Save work and prepare to reboot soon."
             $lblMsg.AutoSize = $false
@@ -246,10 +246,13 @@ function Update-Dashboard {
     # !!!!!!!!!!!!! 
     # !!!!!!!!!!!!! edit below line:
     # !!!!!!!!!!!!! 
-    $labels.TargetTime.Text = "Boot 05h 56m:    $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    $labels.TargetTime.Text = "Boot +66h 25m:   $($targetTime.ToString('yyyy-MM-dd HH:mm:ss'))"
     
-    # Display remaining hours and minutes.
-    $labels.Remaining.Text  = "Remaining:       $($remaining.Hours)h $($remaining.Minutes)m"
+    # FIXED: Display remaining time correctly for offsets greater than 24 hours
+    # Use TotalHours and TotalMinutes to show the full duration
+    $remainingHours = [math]::Floor($remaining.TotalHours)
+    $remainingMinutes = $remaining.Minutes
+    $labels.Remaining.Text  = "Remaining:       $($remainingHours)h $($remainingMinutes)m"
     
     $labels.RAM.Text        = "Free RAM:        $freeRAM_GB GB"
     $labels.Disk.Text       = "Free Disk Space: $freeDisk_TB TB"
@@ -262,9 +265,9 @@ function Update-Dashboard {
     $labels.Updated.Text    = "Updated:         $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 }
 
-# =============================================================================
+# ================================================
 # 7. TIMER SETUP
-# =============================================================================
+# ================================================
 # Create a Forms Timer to trigger the update automatically.
 $timer = New-Object System.Windows.Forms.Timer
 
@@ -274,9 +277,9 @@ $timer.Interval = 30000
 # Add the event: Every 30s, run Update-Dashboard.
 $timer.Add_Tick({ Update-Dashboard -Offset $Offset })
 
-# =============================================================================
+# ================================================
 # 8. STARTUP
-# =============================================================================
+# ================================================
 # Run the update ONCE immediately. Otherwise, the form would be blank 
 # for the first 30 seconds until the timer ticks.
 Update-Dashboard -Offset $Offset
@@ -284,9 +287,9 @@ Update-Dashboard -Offset $Offset
 # Start the timer loop.
 $timer.Start()
 
-# =============================================================================
+# ================================================
 # POSITION FORM ON SECONDARY MONITOR (LEFT SIDE), BOTTOM-RIGHT CORNER
-# =============================================================================
+# ================================================
 
 # Force handle creation
 $form.Handle | Out-Null
@@ -330,8 +333,8 @@ Write-Host "Secondary monitor: $($secondary.DeviceName)" -ForegroundColor Magent
 Write-Host "Bounds: X=$($bounds.X) to $($bounds.Right), Y=$($bounds.Y) to $($bounds.Bottom)" -ForegroundColor Magenta
 Write-Host "Form positioned at: X=$x, Y=$y (size $($width)x$($height))" -ForegroundColor Magenta
 
-# =============================================================================
+# ================================================
 # 9. SHOW FORM
-# =============================================================================
+# ================================================
 # Display the form as a modal dialog. The script pauses here until closed.
 $form.ShowDialog()

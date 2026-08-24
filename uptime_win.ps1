@@ -28,7 +28,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "System Dashboard"
 
 # Set the window size (Width: 460px, Height: 340px).
-$form.Size = New-Object System.Drawing.Size(460, 340)
+$form.Size = New-Object System.Drawing.Size(400, 220)
 
 # Ensure the window opens directly in the center of the user's screen.
 #$form.StartPosition = "CenterScreen"
@@ -69,16 +69,15 @@ function New-DashboardLabel($text, $top, $color) {
 # Use a Hash table to store labels. This allows us to reference them by name 
 # (e.g., $labels.RAM) later in the script.
 $labels = @{
-    # Key Name   = Call Function (Text, Top Position, Color)
     Uptime       = New-DashboardLabel ""  20  'Yellow'
-    BootTime     = New-DashboardLabel ""  45  'Cyan'
-    TargetTime   = New-DashboardLabel ""  70  'Orange'
-    Remaining    = New-DashboardLabel ""  95  'Red'
-    RAM          = New-DashboardLabel "" 120  'Lime'
-    Disk         = New-DashboardLabel "" 145  'Lime'
-    Handles      = New-DashboardLabel "" 170  'Magenta'
-    Threads      = New-DashboardLabel "" 195  'Magenta'
-    Updated      = New-DashboardLabel "" 220  'DarkGray'
+    BootTime     = New-DashboardLabel ""  40  'Cyan'
+    TargetTime   = New-DashboardLabel ""  60  'Orange'
+    Remaining    = New-DashboardLabel ""  80  'Red'
+    RAM          = New-DashboardLabel "" 100  'Lime'
+    Disk         = New-DashboardLabel "" 120  'Lime'
+    Handles      = New-DashboardLabel "" 140  'Magenta'
+    Threads      = New-DashboardLabel "" 160  'Magenta'
+    Updated      = New-DashboardLabel "" 180  'DarkGray'
 }
 
 # Loop through the hash table and add every label to the Form's Controls collection.

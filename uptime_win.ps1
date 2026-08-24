@@ -27,8 +27,8 @@ $consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "System Dashboard"
 
-# Set the window size (Width: 460px, Height: 260px for 20px spacing).
-$form.Size = New-Object System.Drawing.Size(460, 260)
+# Set the window size (Width: 415px, Height: 240px).
+$form.Size = New-Object System.Drawing.Size(415, 240)
 
 # Ensure the window opens directly in the center of the user's screen.
 #$form.StartPosition = "CenterScreen"

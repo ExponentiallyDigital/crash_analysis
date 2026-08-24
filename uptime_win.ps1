@@ -28,7 +28,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "System Dashboard"
 
 # Set the window size (Width: 415px, Height: 240px).
-$form.Size = New-Object System.Drawing.Size(415, 240)
+$form.Size = New-Object System.Drawing.Size(415, 232)
 
 # Ensure the window opens directly in the center of the user's screen.
 #$form.StartPosition = "CenterScreen"
@@ -50,7 +50,8 @@ function New-DashboardLabel($text, $top, $color) {
     $lbl.Text = $text
     
     # Set position: X=20 (left margin), Y=$top (dynamic).
-    $lbl.Location = New-Object System.Drawing.Point(20, $top)
+    #left padding of 20px, top padding of 20px, and 20px spacing between each label.
+    $lbl.Location = New-Object System.Drawing.Point(10, $top)
     
     # Set size wide enough to hold the data strings.
     $lbl.Size = New-Object System.Drawing.Size(420, 22)
@@ -71,15 +72,15 @@ function New-DashboardLabel($text, $top, $color) {
 # 20px spacing between each label
 $labels = @{
     # Key Name   = Call Function (Text, Top Position, Color)
-    Uptime       = New-DashboardLabel ""  20  'Yellow'
-    BootTime     = New-DashboardLabel ""  40  'Cyan'
-    TargetTime   = New-DashboardLabel ""  60  'Orange'
-    Remaining    = New-DashboardLabel ""  80  'Red'
-    RAM          = New-DashboardLabel "" 100  'Lime'
-    Disk         = New-DashboardLabel "" 120  'Lime'
-    Handles      = New-DashboardLabel "" 140  'Magenta'
-    Threads      = New-DashboardLabel "" 160  'Magenta'
-    Updated      = New-DashboardLabel "" 180  'DarkGray'
+    Uptime       = New-DashboardLabel ""   5  'Yellow'
+    BootTime     = New-DashboardLabel ""  25  'Cyan'
+    TargetTime   = New-DashboardLabel ""  45  'Orange'
+    Remaining    = New-DashboardLabel ""  65  'Red'
+    RAM          = New-DashboardLabel ""  85  'Lime'
+    Disk         = New-DashboardLabel "" 105  'Lime'
+    Handles      = New-DashboardLabel "" 125  'Magenta'
+    Threads      = New-DashboardLabel "" 145  'Magenta'
+    Updated      = New-DashboardLabel "" 165  'DarkGray'
 }
 
 # Loop through the hash table and add every label to the Form's Controls collection.
